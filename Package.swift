@@ -43,6 +43,7 @@ let package = Package(
                 "Helpers/CodexAnnouncementFetchPolicy.swift",
                 "Helpers/UsageFetchBackoffPolicy.swift",
                 "Models/Account.swift",
+                "Models/AccountIdentity.swift",
                 "Models/AccountTokenRotation.swift",
                 "Models/CodexSessionTokenRotation.swift",
                 "Models/ProviderAuthPath.swift",

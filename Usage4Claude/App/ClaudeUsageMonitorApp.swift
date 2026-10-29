@@ -68,6 +68,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             updaterDelegate: self,
             userDriverDelegate: nil
         )
+        // 个人 fork：关闭自动更新。用户默认值里残留的 SUEnableAutomaticChecks 会覆盖
+        // Info.plist，所以这里显式写死；真正的拦截在 updater(_:mayPerform:)
+        updaterController.updater.automaticallyChecksForUpdates = false
+        updaterController.updater.automaticallyDownloadsUpdates = false
     }
 
     /// Combine 订阅集合，用于自动管理观察者生命周期
@@ -192,6 +196,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 // MARK: - SPUUpdaterDelegate
 
 extension AppDelegate: SPUUpdaterDelegate {
+    /// 个人 fork：拒绝一切更新检查（含手动），避免上游版本覆盖 fork
+    func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
+        throw NSError(
+            domain: "Usage4Claude.ForkUpdatesDisabled",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Automatic updates are disabled in this fork of Usage4Claude."]
+        )
+    }
+
     /// Sparkle 在后台或手动检查中发现可用更新时回调：点亮菜单栏徽章 /
     /// 彩虹文字状态机，与 Sparkle 自己的“有可用更新”模态对话框并存。
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {

@@ -1244,8 +1244,15 @@ class UserSettings: ObservableObject {
 
     /// 添加新账户
     /// - Parameter account: 要添加的账户
-    func addAccount(_ account: Account) {
-        accountStore.addAccount(account)
+    /// - Returns: 实际存储的账户（同一用户 + 同一组织已存在时为更新后的原条目，id 与传入的不同）
+    @discardableResult
+    func addAccount(_ account: Account) -> Account {
+        accountStore.addAccount(account).account
+    }
+
+    /// 回填账户身份（账号 uuid / email / 组织名），见 AccountStore.backfillClaudeAccountIdentity
+    func backfillClaudeAccountIdentity(accountId: UUID, accountUuid: String?, email: String?, organizationName: String?) {
+        accountStore.backfillClaudeAccountIdentity(accountId: accountId, accountUuid: accountUuid, email: email, organizationName: organizationName)
     }
 
     /// 删除账户

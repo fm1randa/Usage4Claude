@@ -17,7 +17,8 @@ import Foundation
 /// passkey 等登录方式的限制（Issue #49）。
 ///
 /// 凭据约定：refresh_token（sk-ant-ort01-…）存入 `Account.sessionKey`，
-/// `organizationId` 存组织 uuid（与旧 cookie 账户去重标识一致，便于平滑迁移）。
+/// `organizationId` 存组织 uuid，`accountUuid` / `email` 存登录用户身份；
+/// 账户按「用户 + 组织」去重，同一组织的多个成员可以共存（见 AccountIdentity）。
 @MainActor
 final class ClaudeOAuthCoordinator: ObservableObject {
 
@@ -201,33 +202,34 @@ final class ClaudeOAuthCoordinator: ObservableObject {
         }
     }
 
-    private func createAccount(tokens: ClaudeOAuthTokens, profile: Result<(email: String, orgId: String, orgName: String), Error>) {
+    private func createAccount(tokens: ClaudeOAuthTokens, profile: Result<(email: String, accountUuid: String, orgId: String, orgName: String), Error>) {
         guard !finished else { return }
 
         var email = ""
+        var accountUuid = ""
         var orgId = ""
+        var orgName = ""
         if case .success(let p) = profile {
             email = p.email
+            accountUuid = p.accountUuid
             orgId = p.orgId
+            orgName = p.orgName
         }
-        let displayName = email.isEmpty ? "Claude" : email
-        // organizationId 用组织 uuid（缺失时退回 email），与旧 cookie 账户的去重标识一致
+        // organizationId 用组织 uuid（缺失时退回 email）
         let stableOrgId = orgId.isEmpty ? email : orgId
+        let organizationName = !orgName.isEmpty ? orgName : (email.isEmpty ? "Claude" : email)
 
-        // 迁移：addAccount 对已存在的 organizationId 会直接跳过，故先移除同标识的旧账户再添加
-        if !stableOrgId.isEmpty,
-           let existing = UserSettings.shared.accounts.first(where: { $0.organizationId == stableOrgId }) {
-            UserSettings.shared.removeAccount(existing)
-        }
-
-        let account = Account(
+        // 同一用户 + 同一组织已存在时，addAccount 就地更新原条目并返回它；
+        // 同一组织的其他成员不受影响
+        let account = UserSettings.shared.addAccount(Account(
             sessionKey: tokens.refreshToken,
             organizationId: stableOrgId,
-            organizationName: displayName,
+            organizationName: organizationName,
             alias: nil,
-            provider: .claude
-        )
-        UserSettings.shared.addAccount(account)
+            provider: .claude,
+            accountUuid: accountUuid,
+            email: email
+        ))
         UserSettings.shared.switchToAccount(account)
 
         loginState = .success(accountName: account.displayName)

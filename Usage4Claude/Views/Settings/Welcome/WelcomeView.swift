@@ -147,18 +147,21 @@ struct WelcomeView: View {
             switch result {
             case .success(let organizations):
                 if !organizations.isEmpty {
-                    DispatchQueue.main.async {
+                    // 取登录用户身份，让同一组织的多个成员可以共存（失败时身份留空，下次刷新回填）
+                    apiService.fetchAccountIdentity(sessionKey: sessionKey) { identity in
                         for org in organizations {
                             let newAccount = Account(
                                 sessionKey: sessionKey,
                                 organizationId: org.uuid,
                                 organizationName: org.name,
-                                alias: nil
+                                alias: nil,
+                                accountUuid: identity?.accountUuid,
+                                email: identity?.email
                             )
                             settings.addAccount(newAccount)
                         }
+                        completion(true)
                     }
-                    completion(true)
                 } else {
                     completion(false)
                 }

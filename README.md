@@ -133,6 +133,8 @@ Requires macOS 13 (Ventura) or later, on Intel or Apple silicon.
 
 Updates are installed in-app by [Sparkle](https://sparkle-project.org). Each update is verified against an EdDSA signature before it is installed. Homebrew is not offered at this time.
 
+> **Fork note:** this fork (`fm1randa/Usage4Claude`) disables Sparkle auto-update (no automatic checks, no upstream appcast, update checks refused at runtime) so upstream releases never overwrite it. Rebuild from source to update.
+
 ### Build from Source
 
 Requires Xcode 26 or later.

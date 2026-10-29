@@ -40,6 +40,8 @@ A macOS menu bar app that monitors Claude / Codex subscription usage. Swift + Sw
 - DEBUG builds store credentials in UserDefaults (key prefix `DEBUG_`), separate from Release's Keychain
 - Exception: Codex OAuth access_tokens always go to the Keychain (`CodexAccessTokenStore`), in DEBUG too; they are
   reused until expiry so login, launch and diagnostics never spend a refresh_token (#87, #88)
+- Claude accounts are identified by user + org (`AccountIdentity`: account uuid / email + `organizationId`), never org
+  alone — two members of one org must coexist. Legacy entries without identity are backfilled after their next successful refresh
 - OAuth refresh_tokens rotate on every renewal — any new token-fetching code path must reuse `OAuthTokenCache`'s single-flight mechanism
 - New root-level `.md` files are gitignored by default via `/*.md` — add a `!/filename.md` allowlist entry to track them
 - `website/legal.html` is the Stripe-reviewed 特定商取引法に基づく表記 page (Stripe's registered site is `https://u4c.fi5h.xyz`).

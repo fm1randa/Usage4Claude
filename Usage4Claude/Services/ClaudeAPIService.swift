@@ -95,6 +95,16 @@ class ClaudeAPIService {
             return
         }
 
+        // 成功拉到用量后顺带回填旧条目缺失的身份信息（账号 uuid / email），见 backfillIdentityIfNeeded
+        let requestedAccountId = settings.currentAccount?.id
+        let userCompletion = completion
+        let completion: (Result<UsageData, Error>) -> Void = { [weak self] result in
+            if case .success = result, let accountId = requestedAccountId {
+                self?.backfillIdentityIfNeeded(accountId: accountId)
+            }
+            userCompletion(result)
+        }
+
         // OAuth 账户：凭据是 refresh_token，走 /api/oauth/usage 路径，跳过 Cloudflare cookie 流程
         if Self.isOAuthRefreshToken(settings.sessionKey) {
             fetchOAuthUsage(completion: completion)
@@ -449,6 +459,98 @@ class ClaudeAPIService {
         }
 
         task.resume()
+    }
+
+    // MARK: - Account Identity
+
+    /// 本次运行中已尝试回填身份的账户（每个账户每次启动最多尝试一次，失败也不重试）
+    private var identityBackfillAttempted = Set<UUID>()
+
+    /// 获取 sessionKey 所属用户的身份（账号 uuid / email），用于把同组织的多个成员区分开
+    /// - Note: 失败时回调 nil 而不是报错：身份只影响去重与显示，不能阻断登录
+    func fetchAccountIdentity(
+        sessionKey: String,
+        cookieHeader: String? = nil,
+        completion: @escaping ((accountUuid: String, email: String)?) -> Void
+    ) {
+        let complete: ((accountUuid: String, email: String)?) -> Void = { result in
+            DispatchQueue.main.async { completion(result) }
+        }
+
+        let urlString = "\(baseURL.replacingOccurrences(of: "/organizations", with: ""))/account"
+        guard let url = URL(string: urlString) else {
+            complete(nil)
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.assumesHTTP3Capable = false
+        ClaudeAPIHeaderBuilder.applyHeaders(to: &request, organizationId: nil, sessionKey: sessionKey)
+        if let cookieHeader = cookieHeader {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
+
+        session.dataTask(with: request) { data, response, error in
+            guard error == nil,
+                  let data = data,
+                  let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                AppLog.warning(.api, "Account identity request failed; the account will be stored without user identity for now")
+                complete(nil)
+                return
+            }
+            // 兼容两种形状：顶层即账号对象，或包在 "account" 下
+            let account = root["account"] as? [String: Any] ?? root
+            let uuid = account["uuid"] as? String ?? ""
+            let email = account["email_address"] as? String ?? account["email"] as? String ?? ""
+            guard !uuid.isEmpty || !email.isEmpty else {
+                complete(nil)
+                return
+            }
+            complete((accountUuid: uuid, email: email))
+        }.resume()
+    }
+
+    /// 旧版条目只按组织存储，没有用户身份：在该账户下一次成功刷新后回填，
+    /// 之后同组织的其他成员登录时才能正确区分。只处理刚刷新成功的账户，
+    /// OAuth 路径复用 OAuthTokenCache 中刚换到的 access_token（不额外消耗 refresh_token）。
+    /// - Important: 必须在主线程调用（fetchUsage 的 completion 已保证）
+    private func backfillIdentityIfNeeded(accountId: UUID) {
+        // 重新从 store 读取：刷新期间 refresh_token 可能已轮换，用最新凭据去命中缓存
+        guard let account = settings.accounts.first(where: { $0.id == accountId }),
+              AccountIdentity.needsBackfill(account),
+              !identityBackfillAttempted.contains(accountId) else { return }
+        identityBackfillAttempted.insert(accountId)
+        let credential = account.sessionKey
+
+        if Self.isOAuthRefreshToken(credential) {
+            Task { [weak self] in
+                guard let self,
+                      let accessToken = await self.oauthTokenCache.validCachedToken(refreshToken: credential) else { return }
+                ClaudeOAuthService.fetchProfile(accessToken: accessToken) { result in
+                    guard case .success(let profile) = result else { return }
+                    DispatchQueue.main.async {
+                        UserSettings.shared.backfillClaudeAccountIdentity(
+                            accountId: accountId,
+                            accountUuid: profile.accountUuid,
+                            email: profile.email,
+                            organizationName: profile.orgName
+                        )
+                    }
+                }
+            }
+        } else {
+            fetchAccountIdentity(sessionKey: credential) { identity in
+                guard let identity else { return }
+                UserSettings.shared.backfillClaudeAccountIdentity(
+                    accountId: accountId,
+                    accountUuid: identity.accountUuid,
+                    email: identity.email,
+                    organizationName: nil
+                )
+            }
+        }
     }
 
     // MARK: - OAuth Usage Path

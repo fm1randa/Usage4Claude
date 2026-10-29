@@ -54,12 +54,21 @@
         orphans every existing install — Sparkle will reject all future
         updates whose signature doesn't match the embedded SUPublicEDKey.
     -->
+    <!--
+        Personal fork (fm1randa/Usage4Claude): auto-update is disabled so
+        upstream releases never overwrite the fork. SUFeedURL points at a
+        fork-only path that does not exist (no upstream appcast), automatic
+        checks/downloads are off, and AppDelegate additionally refuses every
+        update check at runtime (SPUUpdaterDelegate mayPerform).
+    -->
     <key>SUFeedURL</key>
-    <string>https://raw.githubusercontent.com/f-is-h/Usage4Claude/main/appcast.xml</string>
+    <string>https://raw.githubusercontent.com/fm1randa/Usage4Claude/main/appcast-disabled.xml</string>
     <key>SUPublicEDKey</key>
     <string>p0CSf0X2mD0Z74yU64g36hGMQKpRE5/GFpaoyhhr6aY=</string>
     <key>SUEnableAutomaticChecks</key>
-    <true/>
+    <false/>
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
 
     <!--
         Under App Sandbox, Sparkle installs updates through a bundled XPC

@@ -219,15 +219,24 @@ final class AccountStore: ObservableObject {
         }
     }
 
-    /// 添加新账户
+    /// 添加新账户；若已存在同一账户（同一用户 + 同一组织，见 AccountIdentity）则就地更新
+    ///
+    /// 身份按「用户 + 组织」判定，同一组织的不同成员可以共存；同一用户在同一组织
+    /// 重新登录时复用原条目（保留 id / 别名 / 通知状态），只替换凭据并补全身份信息。
     /// - Parameter account: 要添加的账户
-    /// - Returns: 是否是第一个 Claude 账户（调用方可据此触发额外的一次性初始化逻辑）
+    /// - Returns: (实际存储的账户 —— 更新时为原条目, 是否是第一个 Claude 账户)
     @discardableResult
-    func addAccount(_ account: Account) -> Bool {
-        // 检查是否已存在相同 organizationId 的账户
-        if accounts.contains(where: { $0.organizationId == account.organizationId }) {
-            AppLog.event(.settings, "Account already exists; skipping: \(account.displayName)")
-            return false
+    func addAccount(_ account: Account) -> (account: Account, wasFirstClaudeAccount: Bool) {
+        if let index = AccountIdentity.indexOfExisting(account, in: accounts) {
+            let previous = accounts[index]
+            let merged = AccountIdentity.merge(account, into: previous)
+            accounts[index] = merged
+            AppLog.event(.settings, "Updated existing Claude account: \(merged.displayName)")
+            // 当前账户的凭据被替换：通知刷新链路改用新凭据（switchToAccount 对当前账户是空操作）
+            if merged.id == currentAccount?.id && previous.sessionKey != merged.sessionKey {
+                postAccountChanged(provider: .claude)
+            }
+            return (merged, false)
         }
         let wasFirstClaudeAccount = accounts.isEmpty
         accounts.append(account)
@@ -240,7 +249,21 @@ final class AccountStore: ObservableObject {
         if wasFirstClaudeAccount {
             postAccountChanged(provider: .claude)
         }
-        return wasFirstClaudeAccount
+        return (account, wasFirstClaudeAccount)
+    }
+
+    /// 回填账户身份（旧版条目只按组织存储，没有账号 uuid / email）。
+    /// 静默更新，不触发 accountChanged：身份信息不影响请求，只影响去重与显示。
+    func backfillClaudeAccountIdentity(accountId: UUID, accountUuid: String?, email: String?, organizationName: String?) {
+        guard let index = accounts.firstIndex(where: { $0.id == accountId }),
+              let updated = AccountIdentity.backfill(
+                accounts[index],
+                accountUuid: accountUuid,
+                email: email,
+                organizationName: organizationName
+              ) else { return }
+        accounts[index] = updated
+        AppLog.event(.settings, "Backfilled identity for Claude account: \(updated.displayName)")
     }
 
     /// 删除账户

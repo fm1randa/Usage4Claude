@@ -56,11 +56,12 @@ enum ClaudeOAuthService {
 
     // MARK: - 账户信息（用于账户显示名）
 
-    /// 拉取 profile，返回 (email, 组织 uuid, 组织名)
-    /// 组织 uuid 用作账户的 organizationId（与旧 cookie 账户的去重标识一致，便于迁移）
+    /// 拉取 profile，返回 (email, 账号 uuid, 组织 uuid, 组织名)
+    /// 组织 uuid 用作账户的 organizationId；账号 uuid / email 与之组合成账户身份，
+    /// 使同一组织的多个成员可以共存（见 AccountIdentity）
     static func fetchProfile(
         accessToken: String,
-        completion: @escaping (Result<(email: String, orgId: String, orgName: String), Error>) -> Void
+        completion: @escaping (Result<(email: String, accountUuid: String, orgId: String, orgName: String), Error>) -> Void
     ) {
         guard let url = URL(string: ClaudeOAuthConfig.profileURL) else {
             completion(.failure(UsageError.invalidURL))
@@ -76,11 +77,12 @@ enum ClaudeOAuthService {
                 completion(.failure(UsageError.decodingError))
                 return
             }
-            let email = account["email"] as? String ?? ""
+            let email = account["email"] as? String ?? account["email_address"] as? String ?? ""
+            let accountUuid = account["uuid"] as? String ?? ""
             let org = json["organization"] as? [String: Any]
             let orgId = org?["uuid"] as? String ?? ""
             let orgName = org?["name"] as? String ?? email
-            completion(.success((email: email, orgId: orgId, orgName: orgName)))
+            completion(.success((email: email, accountUuid: accountUuid, orgId: orgId, orgName: orgName)))
         }.resume()
     }
 

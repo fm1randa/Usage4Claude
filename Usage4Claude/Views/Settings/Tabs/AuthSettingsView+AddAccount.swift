@@ -142,27 +142,36 @@ extension AuthSettingsView {
                 switch result {
                 case .success(let organizations):
                     if !organizations.isEmpty {
-                        let useAlias = organizations.count == 1
-                        for (index, org) in organizations.enumerated() {
-                            let newAccount = Account(
-                                sessionKey: newSessionKey,
-                                organizationId: org.uuid,
-                                organizationName: org.name,
-                                alias: (useAlias && !newAlias.isEmpty) ? newAlias : nil
-                            )
-                            settings.addAccount(newAccount)
-                            // 切换到第一个新添加的账户
-                            if index == 0 {
-                                settings.switchToAccount(newAccount)
+                        isValidating = true
+                        // 取登录用户身份（账号 uuid / email），让同一组织的多个成员可以共存；
+                        // 拿不到时照常添加，身份在下一次成功刷新后回填
+                        apiService.fetchAccountIdentity(sessionKey: newSessionKey) { identity in
+                            isValidating = false
+                            let useAlias = organizations.count == 1
+                            for (index, org) in organizations.enumerated() {
+                                let newAccount = Account(
+                                    sessionKey: newSessionKey,
+                                    organizationId: org.uuid,
+                                    organizationName: org.name,
+                                    alias: (useAlias && !newAlias.isEmpty) ? newAlias : nil,
+                                    accountUuid: identity?.accountUuid,
+                                    email: identity?.email
+                                )
+                                // 同一用户 + 同一组织已存在时返回更新后的原条目
+                                let stored = settings.addAccount(newAccount)
+                                // 切换到第一个新添加的账户
+                                if index == 0 {
+                                    settings.switchToAccount(stored)
+                                }
                             }
-                        }
-                        // 多组织时显示提示
-                        if organizations.count > 1 {
-                            successMessage = String(format: L.Account.multiOrgAdded, organizations.count)
-                        }
-                        // 关闭添加界面
-                        withAnimation {
-                            isAddingAccount = false
+                            // 多组织时显示提示
+                            if organizations.count > 1 {
+                                successMessage = String(format: L.Account.multiOrgAdded, organizations.count)
+                            }
+                            // 关闭添加界面
+                            withAnimation {
+                                isAddingAccount = false
+                            }
                         }
                     } else {
                         validationError = L.Error.noOrganizationsFound

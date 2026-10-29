@@ -170,22 +170,26 @@ final class WebLoginCoordinator: ObservableObject {
                 switch result {
                 case .success(let organizations):
                     if let firstOrg = organizations.first {
-                        let account = Account(
-                            sessionKey: sessionKey,
-                            organizationId: firstOrg.uuid,
-                            organizationName: firstOrg.name,
-                            alias: nil
-                        )
+                        // 取登录用户身份，让同一组织的多个成员可以共存（失败时身份留空，下次刷新回填）
+                        apiService.fetchAccountIdentity(sessionKey: sessionKey, cookieHeader: cookieHeader) { [weak self] identity in
+                            guard let self = self else { return }
+                            // 添加并切换到新账户（同一用户 + 同一组织已存在时为更新后的原条目）
+                            let account = UserSettings.shared.addAccount(Account(
+                                sessionKey: sessionKey,
+                                organizationId: firstOrg.uuid,
+                                organizationName: firstOrg.name,
+                                alias: nil,
+                                accountUuid: identity?.accountUuid,
+                                email: identity?.email
+                            ))
+                            UserSettings.shared.switchToAccount(account)
 
-                        // 添加并切换到新账户
-                        UserSettings.shared.addAccount(account)
-                        UserSettings.shared.switchToAccount(account)
+                            self.loginState = .success(accountName: account.displayName)
+                            self.onAccountCreated?(account)
+                            self.transferCookiesToDefaultStore(domains: ["claude.ai"])
 
-                        self.loginState = .success(accountName: account.displayName)
-                        self.onAccountCreated?(account)
-                        self.transferCookiesToDefaultStore(domains: ["claude.ai"])
-
-                        AppLog.event(.auth, "Claude web login succeeded; created account: \(account.displayName)")
+                            AppLog.event(.auth, "Claude web login succeeded; created account: \(account.displayName)")
+                        }
                     } else {
                         self.loginState = .failed(message: L.Error.noOrganizationsFound)
                     }
