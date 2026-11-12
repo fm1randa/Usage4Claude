@@ -165,10 +165,10 @@ class ClaudeAPIService {
         }
 
         // 成功拉到用量后顺带回填旧条目缺失的身份信息（账号 uuid / email），见 backfillIdentityIfNeeded
-        let requestedAccountId = settings.currentAccount?.id
+        // 回填的是本次请求的账户（多账户时不一定是当前账户）
         let userCompletion = completion
         let completion: (Result<UsageData, Error>) -> Void = { [weak self] result in
-            if case .success = result, let accountId = requestedAccountId {
+            if case .success = result {
                 self?.backfillIdentityIfNeeded(accountId: accountId)
             }
             userCompletion(result)
@@ -600,7 +600,7 @@ class ClaudeAPIService {
         if Self.isOAuthRefreshToken(credential) {
             Task { [weak self] in
                 guard let self,
-                      let accessToken = await self.oauthTokenCache.validCachedToken(refreshToken: credential) else { return }
+                      let accessToken = await self.oauthTokenCache(for: accountId).validCachedToken(refreshToken: credential) else { return }
                 ClaudeOAuthService.fetchProfile(accessToken: accessToken) { result in
                     guard case .success(let profile) = result else { return }
                     DispatchQueue.main.async {
