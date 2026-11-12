@@ -18,6 +18,8 @@ struct AccountUsageSnapshot {
     var errorMessage: String?
     /// Whether `errorMessage` needs the user to fix credentials (vs. a transient rate limit / network error)
     var errorRequiresAuthAction = false
+    /// When `usageData` was fetched (shown next to a warning while it is stale)
+    var fetchedAt: Date?
 }
 
 /// Usage of every Claude account except the active one, keyed by account id
@@ -28,8 +30,14 @@ final class OtherAccountsUsageStore: ObservableObject {
         snapshots[accountId]
     }
 
-    func recordSuccess(_ data: UsageData, for accountId: UUID) {
-        snapshots[accountId] = AccountUsageSnapshot(usageData: data)
+    func recordSuccess(_ data: UsageData, at date: Date = Date(), for accountId: UUID) {
+        snapshots[accountId] = AccountUsageSnapshot(usageData: data, fetchedAt: date)
+    }
+
+    /// Last known data restored from disk, before the first fetch of this launch
+    func seed(_ data: UsageData, fetchedAt: Date, for accountId: UUID) {
+        guard snapshots[accountId] == nil else { return }
+        snapshots[accountId] = AccountUsageSnapshot(usageData: data, fetchedAt: fetchedAt)
     }
 
     func recordFailure(_ message: String, requiresAuthAction: Bool, for accountId: UUID) {

@@ -441,6 +441,11 @@ struct UsageData: Sendable {
     }
 }
 
+// Persisted by LastKnownUsageCache so the last known usage survives a relaunch
+extension UsageData: Codable {}
+extension UsageData.LimitData: Codable {}
+extension UsageData.WeeklyModelLimit: Codable {}
+
 // MARK: - Extra Usage Data (in-memory storage)
 
 /// Extra Usage 数据模型
@@ -474,3 +479,5 @@ struct ExtraUsageData: Sendable {
         return formatter.currencySymbol ?? currency
     }
 }
+
+extension ExtraUsageData: Codable {}

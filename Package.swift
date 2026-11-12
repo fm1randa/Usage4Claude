@@ -26,6 +26,7 @@ let package = Package(
             exclude: ["Resources"],
             sources: [
                 "Models/ClaudeAPIResponseModels.swift",
+                "Models/LastKnownUsageCache.swift",
                 "Helpers/JWT.swift",
                 "Models/MonitoringMode.swift",
                 "Models/ProviderType.swift",

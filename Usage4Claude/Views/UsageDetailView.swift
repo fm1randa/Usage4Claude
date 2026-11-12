@@ -82,6 +82,8 @@ struct UsageDetailView: View {
     @State private var animationTypeHintDismissWorkItem: DispatchWorkItem?
     // 标题旁小叹号的说明当前为哪个 Provider 弹出；nil 表示未显示
     @State private var staleDataDetailProvider: ProviderType?
+    // Same for a background account column; nil when not shown
+    @State private var staleDataDetailAccountId: UUID?
     // 显示更新通知
     @State private var showUpdateNotification = false
     // 显示模式切换（false: 已用量填充, true: 余量填充）
@@ -240,7 +242,8 @@ struct UsageDetailView: View {
     private func staleDataWarning(for provider: ProviderType) -> String? {
         switch provider {
         case .claude:
-            guard usageData != nil, !errorRequiresAuthAction else { return nil }
+            // 有上次的数据就继续显示它（含认证错误），错误只在标题旁提示
+            guard usageData != nil else { return nil }
             return errorMessage
         case .codex:
             guard codexUsageData != nil, !codexErrorRequiresAuthAction, !codexNeedsRelogin else { return nil }
@@ -270,7 +273,7 @@ struct UsageDetailView: View {
             UserSettings.shared.getActiveDisplayTypes(usageData: data).filter { $0.provider == .claude }
         } ?? []
 
-        if let error = errorMessage, usageData == nil || errorRequiresAuthAction {
+        if let error = errorMessage, usageData == nil {
             // 错误信息（无缓存数据或认证类错误时才全屏展示）
             VStack(spacing: 12) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -521,20 +524,64 @@ struct UsageDetailView: View {
                 ),
                 arrowEdge: .bottom
             ) {
-                staleDataDetail(error, provider: provider)
+                staleDataDetail(
+                    error,
+                    fetchedText: lastFetchedTimeText(for: provider),
+                    requiresAuthAction: provider == .claude && errorRequiresAuthAction
+                )
             }
     }
 
-    /// 小叹号弹出的说明：错误原因 + 界面上的数据是几点拿到的
-    private func staleDataDetail(_ error: String, provider: ProviderType) -> some View {
+    /// Stale-data indicator of a background account column (its own popover state)
+    private func accountStaleDataIndicator(_ error: String, account: Account) -> some View {
+        let snapshot = otherAccountsUsage.snapshot(for: account.id)
+        return Image(systemName: "exclamationmark.triangle.fill")
+            .font(.system(size: 12))
+            .foregroundColor(.orange)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                staleDataDetailAccountId = staleDataDetailAccountId == account.id ? nil : account.id
+            }
+            .accessibilityLabel(error)
+            .popover(
+                isPresented: Binding(
+                    get: { staleDataDetailAccountId == account.id },
+                    set: { isPresented in
+                        if !isPresented, staleDataDetailAccountId == account.id {
+                            staleDataDetailAccountId = nil
+                        }
+                    }
+                ),
+                arrowEdge: .bottom
+            ) {
+                staleDataDetail(
+                    error,
+                    fetchedText: snapshot?.fetchedAt.map(Self.fetchedTimeText),
+                    requiresAuthAction: snapshot?.errorRequiresAuthAction ?? false
+                )
+            }
+    }
+
+    /// 小叹号弹出的说明：错误原因 + 界面上的数据是几点拿到的；认证错误再给一个去设置的入口
+    private func staleDataDetail(_ error: String, fetchedText: String?, requiresAuthAction: Bool) -> some View {
         let lines = [
             error,
-            [L.Error.showingCachedData, lastFetchedTimeText(for: provider)].compactMap { $0 }.joined(separator: " ")
+            [L.Error.showingCachedData, fetchedText].compactMap { $0 }.joined(separator: " ")
         ]
         return VStack(alignment: .leading, spacing: 4) {
             Text(lines[0])
             Text(lines[1])
                 .foregroundColor(.secondary)
+            if requiresAuthAction {
+                Button(action: {
+                    staleDataDetailProvider = nil
+                    staleDataDetailAccountId = nil
+                    onMenuAction?(.accounts)
+                }) {
+                    Label(L.Usage.goToSettings, systemImage: "key.fill")
+                }
+                .padding(.top, 6)
+            }
         }
         .font(.system(size: DetailPopoverText.fontSize))
         .fixedSize(horizontal: false, vertical: true)
@@ -663,8 +710,9 @@ struct UsageDetailView: View {
 
     /// Stale-data warning of a non-active account column; nil when not shown
     private func otherAccountStaleWarning(_ account: Account) -> String? {
+        // 有上次的数据就继续显示它（含认证错误），错误只在标题旁提示
         guard let snapshot = otherAccountsUsage.snapshot(for: account.id),
-              snapshot.usageData != nil, !snapshot.errorRequiresAuthAction else { return nil }
+              snapshot.usageData != nil else { return nil }
         return snapshot.errorMessage
     }
 
@@ -704,12 +752,8 @@ struct UsageDetailView: View {
                     .layoutPriority(1)
 
                 if let account, account.id != UserSettings.shared.currentAccount?.id {
-                    // 后台拉取的账户：只有图标，没有说明弹窗（弹窗状态按 Provider 管理）
                     if let error = otherAccountStaleWarning(account) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 12))
-                            .foregroundColor(.orange)
-                            .accessibilityLabel(error)
+                        accountStaleDataIndicator(error, account: account)
                     }
                 } else if let error = staleDataWarning(for: provider) {
                     staleDataIndicator(error, provider: provider)
@@ -1028,6 +1072,11 @@ struct UsageDetailView: View {
                 NotificationCenter.default.post(name: .detailPopoverDismissed, object: nil)
             }
         }
+        .onChange(of: staleDataDetailAccountId) { accountId in
+            if accountId == nil {
+                NotificationCenter.default.post(name: .detailPopoverDismissed, object: nil)
+            }
+        }
         .onChange(of: refreshState.notificationMessage) { message in
             // 监听通知消息变化
             if message != nil {
@@ -1052,6 +1101,7 @@ struct UsageDetailView: View {
             animationTypeHintDismissWorkItem?.cancel()
             animationTypeHintProvider = nil
             staleDataDetailProvider = nil
+            staleDataDetailAccountId = nil
         }
         #if DEBUG
         .background(
@@ -1081,8 +1131,11 @@ struct UsageDetailView: View {
 
     /// 界面上这份数据是什么时候拿到的：当天只显示时分，跨天带上日期
     private func lastFetchedTimeText(for provider: ProviderType) -> String? {
-        guard let date = refreshState.lastSuccessAt[provider] else { return nil }
-        return Calendar.current.isDateInToday(date)
+        refreshState.lastSuccessAt[provider].map(Self.fetchedTimeText)
+    }
+
+    private static func fetchedTimeText(_ date: Date) -> String {
+        Calendar.current.isDateInToday(date)
             ? TimeFormatHelper.formatTimeOnly(date)
             : TimeFormatHelper.formatDateTime(date, dateTemplate: "MMMd")
     }

@@ -55,6 +55,8 @@ class DataRefreshManager: ObservableObject {
     /// Non-active accounts with a request in flight: overlapping refresh paths
     /// (e.g. a ring tap during a timer fetch) must not request the same account twice
     private var otherAccountsInFlight: Set<UUID> = []
+    /// Per-account fetch backoff of the background accounts (rate limits, 5xx, network)
+    private var otherAccountsBackoff: [UUID: UsageFetchBackoffPolicy.State] = [:]
 
     // MARK: - Private State
 
@@ -135,6 +137,29 @@ class DataRefreshManager: ObservableObject {
 
     init() {
         setupWakeObserver()
+        restoreLastKnownUsage()
+    }
+
+    /// Shows every account's last known usage right away, before (and regardless of) the first fetch
+    private func restoreLastKnownUsage() {
+        LastKnownUsageCache.retain(only: Set(settings.accounts.map(\.id)))
+        let cache = LastKnownUsageCache.load()
+        let currentId = settings.currentAccount?.id
+        for account in settings.accounts {
+            guard let entry = cache[account.id] else { continue }
+            if account.id == currentId {
+                usageData = entry.data
+                refreshState.lastSuccessAt[.claude] = entry.fetchedAt
+            } else {
+                otherAccountsUsage.seed(entry.data, fetchedAt: entry.fetchedAt, for: account.id)
+            }
+        }
+    }
+
+    /// Persists the main account's fresh data as its last known usage
+    private func rememberMainAccountUsage(_ data: UsageData) {
+        guard let accountId = settings.currentAccount?.id else { return }
+        LastKnownUsageCache.save(data, for: accountId)
     }
 
     // MARK: - Data Fetching
@@ -233,6 +258,7 @@ class DataRefreshManager: ObservableObject {
                     self.errorMessage = nil
                     self.errorRequiresAuthAction = false
                     self.recordFetchSuccess(for: .claude)
+                    self.rememberMainAccountUsage(data)
                     monitoringUtilizations[.claude] = self.claudeMonitoringUtilization(active: data)
 
                     NotificationManager.shared.checkAndNotify(usageData: data, previousData: previousData)
@@ -268,7 +294,9 @@ class DataRefreshManager: ObservableObject {
         let currentId = settings.currentAccount?.id
         let others = settings.accounts.filter { $0.id != currentId }
         otherAccountsUsage.retain(only: Set(others.map(\.id)))
-        for account in others where !otherAccountsInFlight.contains(account.id) {
+        let now = Date()
+        for account in others where !otherAccountsInFlight.contains(account.id)
+            && UsageFetchBackoffPolicy.shouldFetch(state: otherAccountsBackoff[account.id] ?? .initial, now: now) {
             otherAccountsInFlight.insert(account.id)
             apiService.fetchUsage(forAccount: account.id) { [weak self] result in
                 guard let self = self else { return }
@@ -280,9 +308,19 @@ class DataRefreshManager: ObservableObject {
                 case .success(let data):
                     let previousData = self.otherAccountsUsage.snapshot(for: account.id)?.usageData
                     self.otherAccountsUsage.recordSuccess(data, for: account.id)
+                    self.otherAccountsBackoff[account.id] = nil
+                    LastKnownUsageCache.save(data, for: account.id)
                     NotificationManager.shared.checkAndNotify(usageData: data, previousData: previousData, accountId: account.id)
                 case .failure(let error):
                     AppLog.warning(.refresh, "Refresh of a non-active Claude account failed: \(error.localizedDescription)")
+                    if let failure = self.backoffFailure(for: error) {
+                        self.otherAccountsBackoff[account.id] = UsageFetchBackoffPolicy.recordFailure(
+                            state: self.otherAccountsBackoff[account.id] ?? .initial,
+                            failure: failure,
+                            now: Date(),
+                            jitterFraction: Double.random(in: 0...UsageFetchBackoffPolicy.maxJitterFraction)
+                        )
+                    }
                     self.otherAccountsUsage.recordFailure(
                         error.localizedDescription,
                         requiresAuthAction: self.requiresAuthAction(error),
@@ -641,6 +679,7 @@ class DataRefreshManager: ObservableObject {
                 self.errorRequiresAuthAction = false
                 NotificationManager.shared.checkAndNotify(usageData: data, previousData: previousData)
                 self.recordFetchSuccess(for: .claude)
+                self.rememberMainAccountUsage(data)
                 self.settings.updateSmartMonitoringMode(providerUtilizations: [.claude: self.claudeMonitoringUtilization(active: data)])
                 let newResetsAt = data.resetsAt
                 if hasResetTimeChanged(from: self.lastResetsAt, to: newResetsAt) {
@@ -858,6 +897,12 @@ class DataRefreshManager: ObservableObject {
             errorRequiresAuthAction = false
             claudeBackoff = .initial
             clearClaudeUsageState()
+            // The new main account's own last known data (never another account's) until its fetch lands
+            if let accountId = settings.currentAccount?.id,
+               let entry = LastKnownUsageCache.entry(for: accountId) {
+                usageData = entry.data
+                refreshState.lastSuccessAt[.claude] = entry.fetchedAt
+            }
             if shouldFetchClaudeUsage {
                 fetchClaudeOnly()
             }
