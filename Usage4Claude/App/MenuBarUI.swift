@@ -391,19 +391,7 @@ class MenuBarUI: NSObject {
         // 账户选择子菜单（多账户时显示）
         var hasAccountMenuItems = false
 
-        if settings.accounts.count > 1 {
-            let accountSubmenu = createAccountSubmenu(target: target)
-            let currentAccountName = settings.currentAccountName ?? L.Menu.account
-            let accountItem = NSMenuItem(
-                title: "\(L.Menu.accountPrefix) \(currentAccountName)",
-                action: nil,
-                keyEquivalent: ""
-            )
-            accountItem.submenu = accountSubmenu
-            setMenuItemIcon(accountItem, systemName: "person.2")
-            menu.addItem(accountItem)
-            hasAccountMenuItems = true
-        }
+        // No Claude account switcher: every Claude account is monitored and shown side by side
 
         if settings.codexAccounts.count > 1 {
             let codexSubmenu = createCodexAccountSubmenu(target: target)
@@ -885,7 +873,25 @@ class MenuBarUI: NSObject {
     ///   - codexUsageData: Codex 用量数据
     ///   - hasUpdate: 是否有更新徽章
     /// - Returns: 缓存键字符串
+    /// Usage of every Claude account, in account order; more than one draws one icon per account
+    var claudeAccountsUsage: [UsageData?] {
+        get { iconRenderer.claudeAccountsUsage }
+        set { iconRenderer.claudeAccountsUsage = newValue }
+    }
+
     private func generateCacheKey(usageData: UsageData?, codexUsageData: CodexUsageData? = nil, hasUpdate: Bool) -> String {
+        let key = baseCacheKey(usageData: usageData, codexUsageData: codexUsageData, hasUpdate: hasUpdate)
+        let accounts = claudeAccountsUsage
+        guard accounts.count > 1 else { return key }
+        let accountsKey = accounts.map { data -> String in
+            guard let data else { return "n" }
+            let parts = [data.fiveHour?.percentage, data.sevenDay?.percentage, data.opus?.percentage]
+            return parts.map { $0.map { String(Int($0)) } ?? "-" }.joined(separator: ",")
+        }
+        return key + "_acc" + accountsKey.joined(separator: "|")
+    }
+
+    private func baseCacheKey(usageData: UsageData?, codexUsageData: CodexUsageData? = nil, hasUpdate: Bool) -> String {
         let isMulti = settings.isMultiProviderActive
         guard let data = usageData else {
             var key = "no_data_\(settings.iconDisplayMode.rawValue)_\(settings.iconStyleMode.rawValue)_\(settings.displayMode.rawValue)_mp\(isMulti)_rm\(settings.showRemainingMode)"

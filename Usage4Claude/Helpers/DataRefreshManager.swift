@@ -233,7 +233,7 @@ class DataRefreshManager: ObservableObject {
                     self.errorMessage = nil
                     self.errorRequiresAuthAction = false
                     self.recordFetchSuccess(for: .claude)
-                    monitoringUtilizations[.claude] = data.percentage
+                    monitoringUtilizations[.claude] = self.claudeMonitoringUtilization(active: data)
 
                     NotificationManager.shared.checkAndNotify(usageData: data, previousData: previousData)
 
@@ -278,7 +278,9 @@ class DataRefreshManager: ObservableObject {
                       self.settings.currentAccount?.id != account.id else { return }
                 switch result {
                 case .success(let data):
+                    let previousData = self.otherAccountsUsage.snapshot(for: account.id)?.usageData
                     self.otherAccountsUsage.recordSuccess(data, for: account.id)
+                    NotificationManager.shared.checkAndNotify(usageData: data, previousData: previousData, accountId: account.id)
                 case .failure(let error):
                     AppLog.warning(.refresh, "Refresh of a non-active Claude account failed: \(error.localizedDescription)")
                     self.otherAccountsUsage.recordFailure(
@@ -289,6 +291,15 @@ class DataRefreshManager: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Smart refresh follows the busiest Claude account, not just the active one
+    private func claudeMonitoringUtilization(active data: UsageData) -> Double {
+        let currentId = settings.currentAccount?.id
+        let others = settings.accounts
+            .filter { $0.id != currentId }
+            .compactMap { otherAccountsUsage.snapshot(for: $0.id)?.usageData?.percentage }
+        return ([data.percentage] + others).max() ?? data.percentage
     }
 
     private func clearClaudeUsageState() {
@@ -630,7 +641,7 @@ class DataRefreshManager: ObservableObject {
                 self.errorRequiresAuthAction = false
                 NotificationManager.shared.checkAndNotify(usageData: data, previousData: previousData)
                 self.recordFetchSuccess(for: .claude)
-                self.settings.updateSmartMonitoringMode(providerUtilizations: [.claude: data.percentage])
+                self.settings.updateSmartMonitoringMode(providerUtilizations: [.claude: self.claudeMonitoringUtilization(active: data)])
                 let newResetsAt = data.resetsAt
                 if hasResetTimeChanged(from: self.lastResetsAt, to: newResetsAt) {
                     self.cancelResetVerification()
