@@ -387,6 +387,7 @@
 "account.alias_placeholder" = "例如：個人 Pro、工作團隊";
 "account.clear_alias" = "清除別名";
 "account.organization_id" = "Organization ID";
+"account.email" = "電子郵件";
 "account.copy_org_id" = "複製 Organization ID";
 "account.delete_account" = "刪除此帳戶";
 "account.delete_confirm_title" = "刪除帳戶";

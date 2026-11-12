@@ -33,7 +33,7 @@ extension AuthSettingsView {
                     }
 
                     HStack {
-                        TextField(account.organizationName, text: Binding(
+                        TextField(AccountIdentity.defaultDisplayName(organizationName: account.organizationName, email: AccountIdentity.effectiveEmail(of: account)), text: Binding(
                             get: { account.alias ?? "" },
                             set: { newValue in
                                 settings.updateAccount(account, alias: newValue.isEmpty ? nil : newValue)
@@ -53,6 +53,25 @@ extension AuthSettingsView {
                             .help(L.Account.clearAlias)
                         }
                     }
+                }
+
+                // Email: looked up after sign-in, tells apart accounts of the same organization
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "envelope.fill")
+                            .foregroundColor(.blue)
+                            .font(.subheadline)
+                        Text(L.Account.email)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                    }
+
+                    Text(AccountIdentity.effectiveEmail(of: account) ?? "—")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
                 }
 
                 // Session Key 显示

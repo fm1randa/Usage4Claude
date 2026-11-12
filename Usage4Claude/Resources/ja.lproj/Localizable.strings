@@ -387,6 +387,7 @@
 "account.alias_placeholder" = "例: パーソナルPro、仕事チーム";
 "account.clear_alias" = "エイリアスをクリア";
 "account.organization_id" = "Organization ID";
+"account.email" = "メールアドレス";
 "account.copy_org_id" = "Organization IDをコピー";
 "account.delete_account" = "このアカウントを削除";
 "account.delete_confirm_title" = "アカウントを削除";
