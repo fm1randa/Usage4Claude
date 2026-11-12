@@ -50,6 +50,11 @@ class DataRefreshManager: ObservableObject {
     @Published var codexResetAnnouncement: CodexResetAnnouncement?
     /// 刷新状态管理器
     let refreshState = RefreshState()
+    /// Usage of the non-active Claude accounts (popover side-by-side columns)
+    let otherAccountsUsage = OtherAccountsUsageStore()
+    /// Non-active accounts with a request in flight: overlapping refresh paths
+    /// (e.g. a ring tap during a timer fetch) must not request the same account twice
+    private var otherAccountsInFlight: Set<UUID> = []
 
     // MARK: - Private State
 
@@ -143,6 +148,7 @@ class DataRefreshManager: ObservableObject {
 
         if !claudeEnabled {
             clearClaudeUsageState()
+            otherAccountsUsage.removeAll()
         }
         if !codexEnabled {
             clearCodexUsageState()
@@ -179,6 +185,9 @@ class DataRefreshManager: ObservableObject {
         // （审计报告 4.2：替代 DispatchGroup + 跨线程共享可变结果变量的旧写法）
         let claudeTask: Task<Result<UsageData, Error>, Never>? =
             fetchClaude ? Task { await self.apiService.fetchUsageResult() } : nil
+        if fetchClaude {
+            fetchOtherClaudeAccounts()
+        }
         let codexTask: Task<Result<CodexUsageData, Error>, Never>? =
             fetchCodex ? Task { await self.codexApiService.fetchUsageResult() } : nil
 
@@ -249,6 +258,36 @@ class DataRefreshManager: ObservableObject {
             }
 
             self.settings.updateSmartMonitoringMode(providerUtilizations: monitoringUtilizations)
+        }
+    }
+
+    /// Fetches every non-active Claude account so the popover can show them side by side.
+    /// Runs alongside the active account's fetch; its results never touch the active account's
+    /// state (menu bar icon, notifications, smart refresh, backoff).
+    private func fetchOtherClaudeAccounts() {
+        let currentId = settings.currentAccount?.id
+        let others = settings.accounts.filter { $0.id != currentId }
+        otherAccountsUsage.retain(only: Set(others.map(\.id)))
+        for account in others where !otherAccountsInFlight.contains(account.id) {
+            otherAccountsInFlight.insert(account.id)
+            apiService.fetchUsage(forAccount: account.id) { [weak self] result in
+                guard let self = self else { return }
+                self.otherAccountsInFlight.remove(account.id)
+                // The account may have been removed, or switched to, while the request was in flight
+                guard self.settings.accounts.contains(where: { $0.id == account.id }),
+                      self.settings.currentAccount?.id != account.id else { return }
+                switch result {
+                case .success(let data):
+                    self.otherAccountsUsage.recordSuccess(data, for: account.id)
+                case .failure(let error):
+                    AppLog.warning(.refresh, "Refresh of a non-active Claude account failed: \(error.localizedDescription)")
+                    self.otherAccountsUsage.recordFailure(
+                        error.localizedDescription,
+                        requiresAuthAction: self.requiresAuthAction(error),
+                        for: account.id
+                    )
+                }
+            }
         }
     }
 
@@ -575,6 +614,7 @@ class DataRefreshManager: ObservableObject {
         errorMessage = nil
         errorRequiresAuthAction = false
         markRequestIssued()
+        fetchOtherClaudeAccounts()
 
         // ClaudeAPIService.fetchUsage 保证 completion 一律在主线程回调，此处无需再包一层 DispatchQueue.main.async
         apiService.fetchUsage { [weak self] result in
