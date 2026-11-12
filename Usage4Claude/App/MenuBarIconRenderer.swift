@@ -32,6 +32,10 @@ class MenuBarIconRenderer {
     /// MenuBarManager 借此让菜单栏图标播一段过渡动画翻转过去
     private var showRemainingMode: Bool { settings.showRemainingMode }
 
+    /// Usage of every Claude account, in account order (nil = not fetched yet).
+    /// With more than one account the menu bar draws one concentric-rings icon per account.
+    var claudeAccountsUsage: [UsageData?] = []
+
     /// 口径切换动画正在进行的那一帧。
     /// 仅由 `MenuBarUI` 在逐帧重画期间写入，画完立刻清空；为 nil 时走静态口径。
     var transition: RemainingModeTransition?
@@ -94,6 +98,18 @@ class MenuBarIconRenderer {
         }
 
         var icon: NSImage
+
+        // Several Claude accounts are monitored equally: one icon per account instead of one icon per limit
+        if claudeAccountsUsage.count > 1,
+           settings.iconDisplayMode == .percentageOnly || settings.iconDisplayMode == .both {
+            icon = createMultiAccountIcon(
+                codex: settings.isMultiProviderActive ? codexUsageData : nil,
+                isMonochrome: isMonochrome,
+                button: button
+            )
+            if hasUpdate { icon = addBadgeToImage(icon) }
+            return icon
+        }
 
         if let codex = codexUsageData {
             // 有 Codex 数据路径
@@ -202,6 +218,91 @@ class MenuBarIconRenderer {
         let combined = icons.isEmpty ? createSimpleCircleIcon() : combineIcons(icons, spacing: 2.0, height: metricIconSize)
         combined.isTemplate = isMonochrome
         return combined
+    }
+
+    // MARK: - Multi-Account Icon Creation
+
+    /// One concentric-rings icon per Claude account, in account order, followed by the Codex group
+    private func createMultiAccountIcon(
+        codex: CodexUsageData?,
+        isMonochrome: Bool,
+        button: NSStatusBarButton?
+    ) -> NSImage {
+        var icons: [NSImage] = []
+
+        if settings.iconDisplayMode == .both,
+           let brand = createProviderBrandIcon(.claude, isMonochrome: isMonochrome, size: providerBrandIconSize) {
+            icons.append(brand)
+        }
+        icons.append(contentsOf: claudeAccountsUsage.map {
+            createAccountRingsIcon(data: $0, isMonochrome: isMonochrome, button: button)
+        })
+
+        if let codex {
+            let codexTypes = settings.getActiveDisplayTypes(usageData: nil, codexUsageData: codex, forMenuBar: true)
+                .filter { $0.provider == .codex }
+            let codexIcons = buildCodexIcons(codex: codex, types: codexTypes, isMonochrome: isMonochrome, button: button)
+            if !codexIcons.isEmpty {
+                if settings.iconDisplayMode == .percentageOnly {
+                    icons.append(createMenuBarDividerIcon(isMonochrome: isMonochrome))
+                } else if let brand = createProviderBrandIcon(.codex, isMonochrome: isMonochrome, size: providerBrandIconSize) {
+                    icons.append(brand)
+                }
+                icons.append(contentsOf: codexIcons)
+            }
+        }
+
+        let combined = combineIcons(icons, spacing: 3.0, height: metricIconSize)
+        combined.isTemplate = isMonochrome
+        return combined
+    }
+
+    /// One account's limits as three concentric rings, without numbers:
+    /// inner 5-hour, middle 7-day, outer first weekly model (e.g. Fable).
+    /// A limit the account does not have, or data not fetched yet, leaves only the empty track.
+    private func createAccountRingsIcon(data: UsageData?, isMonochrome: Bool, button: NSStatusBarButton?) -> NSImage {
+        let side = metricIconSize
+        let image = NSImage(size: NSSize(width: side, height: side))
+        image.lockFocus()
+
+        // Proportions tuned at 18pt, scaled with the user's icon size setting
+        let scale = side / 18
+        let lineWidth = 1.6 * scale
+        let center = NSPoint(x: side / 2, y: side / 2)
+        let fiveHourColor: (Double) -> NSColor = { UsageColorScheme.fiveHourColorAdaptive($0, for: button) }
+        let sevenDayColor: (Double) -> NSColor = { UsageColorScheme.sevenDayColorAdaptive($0, for: button) }
+        let modelColor: (Double) -> NSColor = { UsageColorScheme.opusWeeklyColorAdaptive($0, for: button) }
+        let rings: [(radius: CGFloat, percentage: Double?, color: (Double) -> NSColor)] = [
+            (2.8 * scale, data?.fiveHour?.percentage, fiveHourColor),
+            (5.2 * scale, data?.sevenDay?.percentage, sevenDayColor),
+            (7.6 * scale, data?.opus?.percentage, modelColor)
+        ]
+
+        for ring in rings {
+            let track = NSBezierPath()
+            track.appendArc(withCenter: center, radius: ring.radius, startAngle: 0, endAngle: 360, clockwise: false)
+            track.lineWidth = lineWidth
+            (isMonochrome ? NSColor.labelColor.withAlphaComponent(0.25) : NSColor.gray.withAlphaComponent(0.35)).setStroke()
+            track.stroke()
+
+            guard let percentage = ring.percentage else { continue }
+            // Arc length follows the used/remaining toggle; color always keys off the used figure
+            let fill = displayState(usedPercentage: percentage).fill
+            guard fill.length > 0 else { continue }
+            (isMonochrome ? NSColor.labelColor : ring.color(percentage)).setStroke()
+            // 12 o'clock is 90°, advancing clockwise
+            let startAngle = 90 - CGFloat(fill.from) * 360
+            let endAngle = startAngle - CGFloat(fill.length) * 360
+            let arc = NSBezierPath()
+            arc.appendArc(withCenter: center, radius: ring.radius, startAngle: startAngle, endAngle: endAngle, clockwise: true)
+            arc.lineWidth = lineWidth
+            arc.lineCapStyle = fill.length >= 1 ? .butt : .round
+            arc.stroke()
+        }
+
+        image.unlockFocus()
+        image.isTemplate = isMonochrome
+        return image
     }
 
     /// Codex-only 模式图标（无 Claude 账号时）

@@ -253,8 +253,7 @@ struct UsageDetailView: View {
             data: usageData,
             errorMessage: errorMessage,
             errorRequiresAuthAction: errorRequiresAuthAction,
-            isRefreshing: isClaudeRefreshing,
-            isActiveAccount: true
+            isRefreshing: isClaudeRefreshing
         )
     }
 
@@ -265,8 +264,7 @@ struct UsageDetailView: View {
         data usageData: UsageData?,
         errorMessage: String?,
         errorRequiresAuthAction: Bool,
-        isRefreshing isClaudeRefreshing: Bool,
-        isActiveAccount: Bool
+        isRefreshing isClaudeRefreshing: Bool
     ) -> some View {
         let activeDisplayTypes: [LimitType] = usageData.map { data in
             UserSettings.shared.getActiveDisplayTypes(usageData: data).filter { $0.provider == .claude }
@@ -404,8 +402,8 @@ struct UsageDetailView: View {
                 }
                 .frame(height: 114)
                 .onTapGesture {
-                    // 只刷新当前账户；其它账户的列随下一轮刷新更新
-                    if isActiveAccount && refreshState.canRefresh && !refreshState.isRefreshing {
+                    // 刷新全部 Claude 账户（fetchClaudeOnly 会顺带拉取其它账户）
+                    if refreshState.canRefresh && !refreshState.isRefreshing {
                         onMenuAction?(.refreshClaude)
                     }
                 }
@@ -580,25 +578,6 @@ struct UsageDetailView: View {
                 menuButtonLabel(rotated: false)
             } else {
             Menu {
-                if UserSettings.shared.accounts.count > 1 {
-                    Menu {
-                        ForEach(UserSettings.shared.accounts) { account in
-                            Button(action: { UserSettings.shared.switchToAccount(account) }) {
-                                HStack {
-                                    Text(account.displayName)
-                                    if account.id == UserSettings.shared.currentAccountId {
-                                        Spacer(); Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        let name = UserSettings.shared.currentAccountName ?? L.Menu.account
-                        Label("\(L.Menu.accountPrefix) \(name)", systemImage: "person.2")
-                    }
-                    Divider()
-                }
-
                 if UserSettings.shared.codexAccounts.count > 1 {
                     Menu {
                         ForEach(UserSettings.shared.codexAccounts) { account in
@@ -689,16 +668,13 @@ struct UsageDetailView: View {
         return snapshot.errorMessage
     }
 
-    /// - Parameters:
-    ///   - account: set for Claude columns when several accounts are shown side by side;
-    ///     the column title becomes the account name
-    ///   - isActiveAccount: the active account gets a checkmark; clicking another account's name switches to it
+    /// - Parameter account: set for Claude columns when several accounts are shown side by side;
+    ///   the column title becomes the account name
     @ViewBuilder
     private func headerView(
         provider: ProviderType,
         showsControls: Bool,
-        account: Account? = nil,
-        isActiveAccount: Bool = true
+        account: Account? = nil
     ) -> some View {
         let headerIconSize: CGFloat = 18
         let headerRowHeight: CGFloat = 20
@@ -720,40 +696,23 @@ struct UsageDetailView: View {
 
             // 标题与其后的状态标记视觉上是一组，间距收紧到 4pt，给重置预告的文字留出宽度
             HStack(spacing: 4) {
-                if let account, !isActiveAccount {
-                    Button(action: { UserSettings.shared.switchToAccount(account) }) {
-                        Text(account.displayName)
-                            .font(.headline)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    .buttonStyle(.plain)
-                    .focusable(false)
+                Text(account?.displayName ?? (provider == .claude ? L.Usage.title : L.Usage.codexTitle))
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    // 标题优先完整显示，挤不下时由重置预告的文字缩小让位
                     .layoutPriority(1)
 
+                if let account, account.id != UserSettings.shared.currentAccount?.id {
+                    // 后台拉取的账户：只有图标，没有说明弹窗（弹窗状态按 Provider 管理）
                     if let error = otherAccountStaleWarning(account) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 12))
                             .foregroundColor(.orange)
                             .accessibilityLabel(error)
                     }
-                } else {
-                    Text(account?.displayName ?? (provider == .claude ? L.Usage.title : L.Usage.codexTitle))
-                        .font(.headline)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        // 标题优先完整显示，挤不下时由重置预告的文字缩小让位
-                        .layoutPriority(1)
-
-                    if account != nil {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 12))
-                            .foregroundColor(.accentColor)
-                    }
-
-                    if let error = staleDataWarning(for: provider) {
-                        staleDataIndicator(error, provider: provider)
-                    }
+                } else if let error = staleDataWarning(for: provider) {
+                    staleDataIndicator(error, provider: provider)
                 }
 
                 // 重置预告放在标题行：高度固定，出现/消失都不挤动下方图表，圆环与线性图共用同一位置
@@ -907,51 +866,57 @@ struct UsageDetailView: View {
         }
     }
 
-    /// A non-active Claude account's column
+    /// The column of the account fetched through the main pipeline (`usageData` & co.)
+    private func primaryClaudeColumn(account: Account?, showsControls: Bool) -> some View {
+        VStack(spacing: contentSpacing) {
+            ZStack(alignment: .bottom) {
+                VStack(spacing: contentSpacing) {
+                    headerView(provider: .claude, showsControls: showsControls, account: account)
+                    activeClaudeMainContent
+                }
+                .offset(y: isAnimationHintVisible(for: .claude) ? -18 : 0)
+            }
+            .overlay(alignment: .bottom) {
+                animationHintOverlay(for: .claude)
+            }
+        }
+    }
+
+    /// The column of an account fetched in the background (`otherAccountsUsage`)
     private func otherAccountColumn(_ account: Account, showsControls: Bool) -> some View {
         let snapshot = otherAccountsUsage.snapshot(for: account.id)
         return VStack(spacing: contentSpacing) {
-            headerView(provider: .claude, showsControls: showsControls, account: account, isActiveAccount: false)
+            headerView(provider: .claude, showsControls: showsControls, account: account)
             claudeMainContent(
                 data: snapshot?.usageData,
                 errorMessage: snapshot?.errorMessage,
                 errorRequiresAuthAction: snapshot?.errorRequiresAuthAction ?? false,
-                isRefreshing: isClaudeRefreshing,
-                isActiveAccount: false
+                isRefreshing: isClaudeRefreshing
             )
         }
     }
 
-    /// Side-by-side columns: active Claude account, the other Claude accounts, then Codex.
+    /// Claude columns in account order; a single nil entry is the lone account shown under the generic title
+    private var claudeColumnAccounts: [Account?] {
+        otherClaudeAccounts.isEmpty ? [nil] : UserSettings.shared.accounts
+    }
+
+    /// Side-by-side columns: every Claude account in account order, all alike, then Codex.
     /// The refresh/menu controls sit on the rightmost column's header.
     private func multiProviderBody(codex: CodexUsageData?) -> some View {
-        let others = otherClaudeAccounts
-        let showsAccountNames = !others.isEmpty
+        let claudeAccounts = claudeColumnAccounts
+        let primaryId = UserSettings.shared.currentAccount?.id
         return VStack(spacing: contentSpacing) {
             HStack(alignment: .top, spacing: 0) {
-                VStack(spacing: contentSpacing) {
-                    ZStack(alignment: .bottom) {
-                        VStack(spacing: contentSpacing) {
-                            headerView(
-                                provider: .claude,
-                                showsControls: !isMultiProviderActive && others.isEmpty,
-                                account: showsAccountNames ? UserSettings.shared.currentAccount : nil
-                            )
-                            activeClaudeMainContent
+                ForEach(Array(claudeAccounts.enumerated()), id: \.offset) { index, account in
+                    let showsControls = !isMultiProviderActive && index == claudeAccounts.count - 1
+                    Group {
+                        if let account, account.id != primaryId {
+                            otherAccountColumn(account, showsControls: showsControls)
+                        } else {
+                            primaryClaudeColumn(account: account, showsControls: showsControls)
                         }
-                        .offset(y: isAnimationHintVisible(for: .claude) ? -18 : 0)
                     }
-                    .overlay(alignment: .bottom) {
-                        animationHintOverlay(for: .claude)
-                    }
-                }
-                .frame(width: Self.columnWidth, alignment: .top)
-
-                ForEach(Array(others.enumerated()), id: \.element.id) { index, account in
-                    otherAccountColumn(
-                        account,
-                        showsControls: !isMultiProviderActive && index == others.count - 1
-                    )
                     .frame(width: Self.columnWidth, alignment: .top)
                 }
 

@@ -83,14 +83,21 @@ final class NotificationManager: NSObject, ObservableObject {
     /// - Parameters:
     ///   - usageData: 最新的用量数据
     ///   - previousData: 上一次的用量数据（用于对比变化）
-    func checkAndNotify(usageData: UsageData, previousData: UsageData?) {
-        let accountId = UserSettings.shared.currentAccountId
+    ///   - accountId: the Claude account the data belongs to; nil means the active one
+    func checkAndNotify(usageData: UsageData, previousData: UsageData?, accountId: UUID? = nil) {
+        let accountId = accountId ?? UserSettings.shared.currentAccountId
+        // Every Claude account is monitored, so with several of them the notification names the account
+        let accounts = UserSettings.shared.accounts
+        let accountName = accounts.count > 1 ? accounts.first { $0.id == accountId }?.displayName : nil
+        func label(_ limitName: String) -> String {
+            accountName.map { "\($0) · \(limitName)" } ?? limitName
+        }
 
         checkLimit(
             provider: .claude,
             accountId: accountId,
             limitId: LimitType.fiveHour.rawValue,
-            displayName: LimitType.fiveHour.displayName,
+            displayName: label(LimitType.fiveHour.displayName),
             category: .fiveHour,
             current: usageData.fiveHour?.percentage,
             previous: previousData?.fiveHour?.percentage,
@@ -101,7 +108,7 @@ final class NotificationManager: NSObject, ObservableObject {
             provider: .claude,
             accountId: accountId,
             limitId: LimitType.sevenDay.rawValue,
-            displayName: LimitType.sevenDay.displayName,
+            displayName: label(LimitType.sevenDay.displayName),
             category: .weekly,
             current: usageData.sevenDay?.percentage,
             previous: previousData?.sevenDay?.percentage,
@@ -124,7 +131,7 @@ final class NotificationManager: NSObject, ObservableObject {
                 provider: .claude,
                 accountId: accountId,
                 limitId: limitId,
-                displayName: Self.weeklyModelDisplayName(model, index: index),
+                displayName: label(Self.weeklyModelDisplayName(model, index: index)),
                 category: .weekly,
                 current: model.limit.percentage,
                 previous: previous?.percentage,
@@ -138,7 +145,7 @@ final class NotificationManager: NSObject, ObservableObject {
             provider: .claude,
             accountId: accountId,
             limitId: LimitType.extraUsage.rawValue,
-            displayName: LimitType.extraUsage.displayName,
+            displayName: label(LimitType.extraUsage.displayName),
             category: .extraUsage,
             current: usageData.extraUsage?.percentage,
             previous: previousData?.extraUsage?.percentage,

@@ -112,6 +112,15 @@ class MenuBarManager: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // Non-active accounts' rings in the menu bar. Deferred to the main queue because
+        // @Published emits before the new value is stored, and the icon reads the store
+        dataManager.otherAccountsUsage.$snapshots
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateMenuBarIcon()
+            }
+            .store(in: &cancellables)
+
         dataManager.$codexUsageData
             .sink { [weak self] data in
                 self?.codexUsageData = data
@@ -268,6 +277,7 @@ class MenuBarManager: ObservableObject {
                 // 只有真正变化时才会收到这条通知（见 UserSettings.showRemainingMode），
                 // 所以取反就是切换前的口径，够用了
                 let to = self.settings.showRemainingMode
+                self.ui.claudeAccountsUsage = self.claudeAccountsUsage
                 self.ui.animateRemainingModeTransition(
                     from: !to,
                     to: to,
@@ -647,7 +657,16 @@ class MenuBarManager: ObservableObject {
     // MARK: - Icon Management
 
     /// 更新菜单栏图标
+    /// Every Claude account's usage, in account order
+    private var claudeAccountsUsage: [UsageData?] {
+        let currentId = settings.currentAccount?.id
+        return settings.accounts.map { account in
+            account.id == currentId ? usageData : dataManager.otherAccountsUsage.snapshot(for: account.id)?.usageData
+        }
+    }
+
     private func updateMenuBarIcon() {
+        ui.claudeAccountsUsage = claudeAccountsUsage
         ui.updateMenuBarIcon(usageData: usageData, codexUsageData: codexUsageData, hasUpdate: hasAvailableUpdate, shouldShowBadge: shouldShowUpdateBadge)
     }
     
