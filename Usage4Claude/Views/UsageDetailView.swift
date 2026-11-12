@@ -716,6 +716,14 @@ struct UsageDetailView: View {
         return snapshot.errorMessage
     }
 
+    /// Last successful fetch of a column: a background account's own snapshot, otherwise the provider's main fetch
+    private func lastUpdatedAt(provider: ProviderType, account: Account?) -> Date? {
+        if provider == .claude, let account, account.id != UserSettings.shared.currentAccount?.id {
+            return otherAccountsUsage.snapshot(for: account.id)?.fetchedAt
+        }
+        return refreshState.lastSuccessAt[provider]
+    }
+
     /// - Parameter account: set for Claude columns when several accounts are shown side by side;
     ///   the column title becomes the account name
     @ViewBuilder
@@ -769,6 +777,15 @@ struct UsageDetailView: View {
 
             // 最小宽度为 0：与刷新按钮之间仍有 HStack 默认间距，最挤时把这 4pt 也让给文字
             Spacer(minLength: 0)
+
+            // When the numbers in this column were fetched (date and time)
+            if let updatedAt = lastUpdatedAt(provider: provider, account: account) {
+                Text(TimeFormatHelper.formatDateTime(updatedAt, dateTemplate: "MMMd"))
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
 
             if showsControls {
                 refreshAndMenuButtons
