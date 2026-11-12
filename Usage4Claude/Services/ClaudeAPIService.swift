@@ -38,7 +38,41 @@ class ClaudeAPIService {
     // 多个并发刷新调用可能用同一个 refresh_token，导致后到者触发 401。
     // 单飞合并 + 缓存都委托给 OAuthTokenCache（actor，见 Services/OAuthTokenCache.swift），
     // 用 actor 的串行化天然替代手写 NSLock + 等待者数组。
-    private let oauthTokenCache = OAuthTokenCache()
+    //
+    // One cache per account: the popover fetches every Claude account in the same refresh
+    // cycle, and a single shared cache would evict one account's access token for another's,
+    // forcing a refresh (and a refresh_token rotation) on every cycle. Keying by account id
+    // (not by "active vs. other") also keeps an account on the same single-flight when it is
+    // switched to while one of its refreshes is still in flight.
+    private var oauthTokenCaches: [UUID: OAuthTokenCache] = [:]
+    private let oauthTokenCachesLock = NSLock()
+
+    private func oauthTokenCache(for accountId: UUID) -> OAuthTokenCache {
+        oauthTokenCachesLock.lock()
+        defer { oauthTokenCachesLock.unlock() }
+        if let cache = oauthTokenCaches[accountId] {
+            return cache
+        }
+        let cache = OAuthTokenCache()
+        oauthTokenCaches[accountId] = cache
+        return cache
+    }
+
+    /// The credentials one usage fetch runs with
+    private struct FetchCredentials {
+        let sessionKey: String
+        let organizationId: String
+    }
+
+    /// Reads the account's credentials at call time, so a retry after a refresh_token
+    /// rotation picks up the rotated token instead of the one the fetch started with.
+    private func credentials(for accountId: UUID) -> FetchCredentials? {
+        guard let account = settings.accounts.first(where: { $0.id == accountId }) else { return nil }
+        let credentials = FetchCredentials(sessionKey: account.sessionKey, organizationId: account.organizationId)
+        guard !credentials.sessionKey.isEmpty else { return nil }
+        if Self.isOAuthRefreshToken(credentials.sessionKey) { return credentials }
+        return credentials.organizationId.isEmpty ? nil : credentials
+    }
 
     // MARK: - Initialization
 
@@ -62,9 +96,14 @@ class ClaudeAPIService {
     }
 
     /// 清除 OAuth access_token 缓存（账户切换时调用；401 重试路径见 fetchClaudeOAuthUsageData，
-    /// 那里需要等 clear 完成后再重试，走的是 oauthTokenCache.clear() 的 await 版本）
+    /// 那里需要等 clear 完成后再重试，走的是 oauthTokenCache(for:).clear() 的 await 版本）
     func clearOAuthTokenCache() {
-        Task { await oauthTokenCache.clear() }
+        oauthTokenCachesLock.lock()
+        let caches = Array(oauthTokenCaches.values)
+        oauthTokenCachesLock.unlock()
+        Task {
+            for cache in caches { await cache.clear() }
+        }
     }
     
     // MARK: - Public Methods
@@ -90,7 +129,37 @@ class ClaudeAPIService {
         currentTask?.cancel()
 
         // 检查认证信息
-        guard settings.hasValidCredentials else {
+        guard settings.hasValidCredentials, let accountId = settings.currentAccount?.id else {
+            DispatchQueue.main.async { completion(.failure(UsageError.noCredentials)) }
+            return
+        }
+
+        performFetch(accountId: accountId, tracksCurrentTask: true, completion: completion)
+    }
+
+    /// Fetches the usage of a Claude account other than the active one (popover side-by-side columns).
+    /// Unlike `fetchUsage(completion:)` it never cancels, and is never cancelled by, the active
+    /// account's request, so all accounts can be fetched in the same refresh cycle.
+    func fetchUsage(forAccount accountId: UUID, completion: @escaping (Result<UsageData, Error>) -> Void) {
+        #if DEBUG
+        if settings.debugModeEnabled {
+            let mockData = createMockData()
+            DispatchQueue.main.async {
+                completion(.success(mockData))
+            }
+            return
+        }
+        #endif
+
+        performFetch(accountId: accountId, tracksCurrentTask: false, completion: completion)
+    }
+
+    private func performFetch(
+        accountId: UUID,
+        tracksCurrentTask: Bool,
+        completion: @escaping (Result<UsageData, Error>) -> Void
+    ) {
+        guard let credentials = credentials(for: accountId) else {
             DispatchQueue.main.async { completion(.failure(UsageError.noCredentials)) }
             return
         }
@@ -106,8 +175,8 @@ class ClaudeAPIService {
         }
 
         // OAuth 账户：凭据是 refresh_token，走 /api/oauth/usage 路径，跳过 Cloudflare cookie 流程
-        if Self.isOAuthRefreshToken(settings.sessionKey) {
-            fetchOAuthUsage(completion: completion)
+        if Self.isOAuthRefreshToken(credentials.sessionKey) {
+            fetchOAuthUsage(accountId: accountId, completion: completion)
             return
         }
 
@@ -119,7 +188,7 @@ class ClaudeAPIService {
 
         // ========== 请求1: 主 Usage API ==========
         dispatchGroup.enter()
-        fetchMainUsage { result in
+        fetchMainUsage(credentials: credentials, tracksCurrentTask: tracksCurrentTask) { result in
             switch result {
             case .success(let data):
                 mainUsageData = data
@@ -131,7 +200,7 @@ class ClaudeAPIService {
 
         // ========== 请求2: Extra Usage API（可选） ==========
         dispatchGroup.enter()
-        fetchExtraUsage { result in
+        fetchExtraUsage(credentials: credentials) { result in
             switch result {
             case .success(let data):
                 extraUsageData = data  // 可能为 nil（功能未启用或失败）
@@ -170,13 +239,17 @@ class ClaudeAPIService {
 
     /// 获取主 Usage API 数据（内部方法）
     /// - Parameter completion: 完成回调
-    private func fetchMainUsage(completion: @escaping (Result<UsageData, Error>) -> Void) {
+    private func fetchMainUsage(
+        credentials: FetchCredentials,
+        tracksCurrentTask: Bool,
+        completion: @escaping (Result<UsageData, Error>) -> Void
+    ) {
         // Service 层统一约定：所有 completion 一律在主线程回调，调用方无需再包一层 DispatchQueue.main.async
         let complete: (Result<UsageData, Error>) -> Void = { result in
             DispatchQueue.main.async { completion(result) }
         }
 
-        let urlString = "\(baseURL)/\(settings.organizationId)/usage"
+        let urlString = "\(baseURL)/\(credentials.organizationId)/usage"
 
         guard let url = URL(string: urlString) else {
             complete(.failure(UsageError.invalidURL))
@@ -190,12 +263,12 @@ class ClaudeAPIService {
         // 使用统一的 Header 构建器添加完整的浏览器 Headers 以绕过 Cloudflare
         ClaudeAPIHeaderBuilder.applyHeaders(
             to: &request,
-            organizationId: settings.organizationId,
-            sessionKey: settings.sessionKey
+            organizationId: credentials.organizationId,
+            sessionKey: credentials.sessionKey
         )
 
-        // 创建并保存任务引用
-        currentTask = session.dataTask(with: request) { data, response, error in
+        // 只有当前账户的请求记进 currentTask：其它账户的请求不能被它取消，也不能把它顶掉
+        let task = session.dataTask(with: request) { data, response, error in
             if let error = error {
                 AppLog.error(.api, "Usage request failed with a network error: \(error.localizedDescription)")
                 complete(.failure(UsageError.fromTransportError(error)))
@@ -276,8 +349,11 @@ class ClaudeAPIService {
             }
         }
 
+        if tracksCurrentTask {
+            currentTask = task
+        }
         // 启动任务
-        currentTask?.resume()
+        task.resume()
     }
 
     /// 获取用户的组织列表
@@ -376,19 +452,16 @@ class ClaudeAPIService {
     /// 获取 Extra Usage 额外用量数据
     /// - Parameter completion: 完成回调，包含成功的 ExtraUsageData 或失败的 Error
     /// - Note: 此方法是可选的，即使失败也不应影响主要功能
-    func fetchExtraUsage(completion: @escaping (Result<ExtraUsageData?, Error>) -> Void) {
+    private func fetchExtraUsage(
+        credentials: FetchCredentials,
+        completion: @escaping (Result<ExtraUsageData?, Error>) -> Void
+    ) {
         // Service 层统一约定：所有 completion 一律在主线程回调，调用方无需再包一层 DispatchQueue.main.async
         let complete: (Result<ExtraUsageData?, Error>) -> Void = { result in
             DispatchQueue.main.async { completion(result) }
         }
 
-        // 检查认证信息
-        guard settings.hasValidCredentials else {
-            complete(.failure(UsageError.noCredentials))
-            return
-        }
-
-        let urlString = "\(baseURL)/\(settings.organizationId)/overage_spend_limit"
+        let urlString = "\(baseURL)/\(credentials.organizationId)/overage_spend_limit"
 
         guard let url = URL(string: urlString) else {
             complete(.failure(UsageError.invalidURL))
@@ -402,8 +475,8 @@ class ClaudeAPIService {
         // 使用统一的 Header 构建器添加完整的浏览器 Headers
         ClaudeAPIHeaderBuilder.applyHeaders(
             to: &request,
-            organizationId: settings.organizationId,
-            sessionKey: settings.sessionKey
+            organizationId: credentials.organizationId,
+            sessionKey: credentials.sessionKey
         )
 
         let task = session.dataTask(with: request) { data, response, error in
@@ -559,24 +632,28 @@ class ClaudeAPIService {
     /// - Parameter retryOnUnauthorized: 收到 401 时是否清缓存后立即重试一次（强制换新 access_token）。
     ///   仿照 Codex 侧 `DataRefreshManager.fetchCodexOnly(retryOnUnauthorized:)` 的既有模式，
     ///   避免用户在下一个刷新周期到来前一直看到错误状态。
-    private func fetchOAuthUsage(retryOnUnauthorized: Bool = true, completion: @escaping (Result<UsageData, Error>) -> Void) {
-        let refreshToken = settings.sessionKey
-        fetchOAuthAccessToken(refreshToken: refreshToken) { [weak self] result in
+    private func fetchOAuthUsage(accountId: UUID, retryOnUnauthorized: Bool = true, completion: @escaping (Result<UsageData, Error>) -> Void) {
+        guard let refreshToken = credentials(for: accountId)?.sessionKey else {
+            DispatchQueue.main.async { completion(.failure(UsageError.noCredentials)) }
+            return
+        }
+        fetchOAuthAccessToken(accountId: accountId, refreshToken: refreshToken) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
                 DispatchQueue.main.async { completion(.failure(error)) }
             case .success(let accessToken):
-                self.fetchClaudeOAuthUsageData(accessToken: accessToken, retryOnUnauthorized: retryOnUnauthorized, completion: completion)
+                self.fetchClaudeOAuthUsageData(accountId: accountId, accessToken: accessToken, retryOnUnauthorized: retryOnUnauthorized, completion: completion)
             }
         }
     }
 
     /// 用 refresh_token 获取 access_token，带缓存 + 单飞合并（委托给 OAuthTokenCache actor）
-    private func fetchOAuthAccessToken(refreshToken: String, completion: @escaping (Result<String, Error>) -> Void) {
+    private func fetchOAuthAccessToken(accountId: UUID, refreshToken: String, completion: @escaping (Result<String, Error>) -> Void) {
+        let cache = oauthTokenCache(for: accountId)
         Task {
             do {
-                let accessToken = try await oauthTokenCache.accessToken(refreshToken: refreshToken) { [weak self] token in
+                let accessToken = try await cache.accessToken(refreshToken: refreshToken) { [weak self] token in
                     guard let self else { throw UsageError.decodingError }
                     return try await self.refreshClaudeOAuthTokens(refreshToken: token)
                 }
@@ -618,7 +695,7 @@ class ClaudeAPIService {
     }
 
     /// 用 access_token 调用 /api/oauth/usage，解析为 UsageData
-    private func fetchClaudeOAuthUsageData(accessToken: String, retryOnUnauthorized: Bool, completion: @escaping (Result<UsageData, Error>) -> Void) {
+    private func fetchClaudeOAuthUsageData(accountId: UUID, accessToken: String, retryOnUnauthorized: Bool, completion: @escaping (Result<UsageData, Error>) -> Void) {
         // Service 层统一约定：所有 completion 一律在主线程回调，调用方无需再包一层 DispatchQueue.main.async
         let complete: (Result<UsageData, Error>) -> Void = { result in
             DispatchQueue.main.async { completion(result) }
@@ -632,6 +709,7 @@ class ClaudeAPIService {
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue(ClaudeOAuthConfig.betaHeader, forHTTPHeaderField: "anthropic-beta")
 
+        let cache = oauthTokenCache(for: accountId)
         session.dataTask(with: request) { [weak self] data, response, error in
             if let error = error {
                 AppLog.error(.api, "Claude OAuth usage request failed with a network error: \(error.localizedDescription)")
@@ -654,11 +732,11 @@ class ClaudeAPIService {
                     if retryOnUnauthorized {
                         AppLog.event(.auth, "Claude OAuth usage returned 401; clearing the cached access token and retrying once with the refresh_token")
                         Task {
-                            await self?.oauthTokenCache.clear()
-                            self?.fetchOAuthUsage(retryOnUnauthorized: false, completion: completion)
+                            await cache.clear()
+                            self?.fetchOAuthUsage(accountId: accountId, retryOnUnauthorized: false, completion: completion)
                         }
                     } else {
-                        Task { await self?.oauthTokenCache.clear() }
+                        Task { await cache.clear() }
                         complete(.failure(UsageError.unauthorized))
                     }
                     return

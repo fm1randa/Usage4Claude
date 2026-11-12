@@ -402,6 +402,7 @@ class MenuBarManager: ObservableObject {
                 set: { _ in }
             ),
             refreshState: self.refreshState,
+            otherAccountsUsage: self.dataManager.otherAccountsUsage,
             onMenuAction: { [weak self] action in
                 self?.handleMenuAction(action)
             },

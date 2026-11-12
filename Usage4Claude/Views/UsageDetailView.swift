@@ -25,6 +25,8 @@ struct UsageDetailView: View {
     /// Codex 官方重置预告（Beta，第三方数据源 codex-reset.com）；nil 表示无预告或功能已关闭
     @Binding var codexResetAnnouncement: CodexResetAnnouncement?
     @ObservedObject var refreshState: RefreshState
+    /// Usage of the non-active Claude accounts, each shown as an extra column next to the active one
+    @ObservedObject var otherAccountsUsage: OtherAccountsUsageStore
     /// 菜单操作回调
     var onMenuAction: ((MenuAction) -> Void)? = nil
     @StateObject private var localization = LocalizationManager.shared
@@ -106,6 +108,32 @@ struct UsageDetailView: View {
         refreshState.isRefreshingProvider(.claude)
     }
 
+    private static let columnWidth: CGFloat = 290
+
+    /// Non-active Claude accounts, each shown as its own column after the active account
+    private var otherClaudeAccounts: [Account] {
+        // 文档配图读的是本机真实的 UserSettings：只画当前账户，不把本机其它账户画进去
+        guard !isCodexOnlyActive, !DocsRenderMode.isActive else { return [] }
+        let currentId = UserSettings.shared.currentAccount?.id
+        return UserSettings.shared.accounts.filter { $0.id != currentId }
+    }
+
+    /// Side-by-side columns: several Claude accounts, and/or Claude + Codex
+    private var usesColumnLayout: Bool {
+        isMultiProviderActive || !otherClaudeAccounts.isEmpty
+    }
+
+    private var columnCount: Int {
+        1 + otherClaudeAccounts.count + (isMultiProviderActive ? 1 : 0)
+    }
+
+    private func claudeColumnRowCount(_ data: UsageData?) -> Int {
+        guard let data else { return 2 }
+        let types = UserSettings.shared.getActiveDisplayTypes(usageData: data)
+            .filter { $0.provider == .claude }
+        return types.count == 1 ? 2 : max(types.count, 1)
+    }
+
     /// 获取当前 Claude 活动的显示类型
     private var activeDisplayTypes: [LimitType] {
         guard let data = usageData else { return [] }
@@ -151,27 +179,25 @@ struct UsageDetailView: View {
         return baseHeight + textHeight
     }
 
-    /// 双 Provider 模式的动态高度（取两列最大行数）
+    /// 多列模式的动态高度（取所有列的最大行数）
     private var multiProviderHeight: CGFloat {
-        let claudeRowCount: Int
-        if let data = usageData {
-            let types = UserSettings.shared.getActiveDisplayTypes(usageData: data)
-                .filter { $0.provider == .claude }
-            claudeRowCount = types.count == 1 ? 2 : max(types.count, 1)
-        } else {
-            claudeRowCount = 2
+        var maxRows = claudeColumnRowCount(usageData)
+        for account in otherClaudeAccounts {
+            maxRows = max(maxRows, claudeColumnRowCount(otherAccountsUsage.snapshot(for: account.id)?.usageData))
         }
 
-        let codexRowCount: Int
-        if let codex = codexUsageData {
-            let types = UserSettings.shared.getActiveDisplayTypes(usageData: nil, codexUsageData: codex)
-                .filter { $0.provider == .codex }
-            codexRowCount = max(types.count, 1)
-        } else {
-            codexRowCount = 2
+        if isMultiProviderActive {
+            let codexRowCount: Int
+            if let codex = codexUsageData {
+                let types = UserSettings.shared.getActiveDisplayTypes(usageData: nil, codexUsageData: codex)
+                    .filter { $0.provider == .codex }
+                codexRowCount = max(types.count, 1)
+            } else {
+                codexRowCount = 2
+            }
+            maxRows = max(maxRows, codexRowCount)
         }
 
-        let maxRows = max(claudeRowCount, codexRowCount)
         let rowHeight: CGFloat = 26
         let spacing: CGFloat = 5
         let rowsHeight = CGFloat(maxRows) * rowHeight + CGFloat(max(0, maxRows - 1)) * spacing
@@ -179,7 +205,15 @@ struct UsageDetailView: View {
     }
 
     private var contentSpacing: CGFloat {
-        let visibleTypeCount = isCodexOnlyActive ? activeCodexDisplayTypes.count : activeDisplayTypes.count
+        var visibleTypeCount = isCodexOnlyActive ? activeCodexDisplayTypes.count : activeDisplayTypes.count
+        // 多账户列共用同一个间距：任一列行数多就收紧，否则那一列的末行会被固定高度裁掉
+        for account in otherClaudeAccounts {
+            guard let data = otherAccountsUsage.snapshot(for: account.id)?.usageData else { continue }
+            let count = UserSettings.shared.getActiveDisplayTypes(usageData: data)
+                .filter { $0.provider == .claude }
+                .count
+            visibleTypeCount = max(visibleTypeCount, count)
+        }
         return visibleTypeCount >= 2 ? 10 : 16
     }
 
@@ -188,11 +222,11 @@ struct UsageDetailView: View {
     }
 
     private var contentWidth: CGFloat {
-        isMultiProviderActive ? 580 : 290
+        usesColumnLayout ? Self.columnWidth * CGFloat(columnCount) : Self.columnWidth
     }
 
     private var contentHeight: CGFloat {
-        if isMultiProviderActive {
+        if usesColumnLayout {
             return multiProviderHeight
         }
         if isCodexOnlyActive {
@@ -214,8 +248,30 @@ struct UsageDetailView: View {
         }
     }
 
+    private var activeClaudeMainContent: some View {
+        claudeMainContent(
+            data: usageData,
+            errorMessage: errorMessage,
+            errorRequiresAuthAction: errorRequiresAuthAction,
+            isRefreshing: isClaudeRefreshing,
+            isActiveAccount: true
+        )
+    }
+
+    /// One Claude account's ring and limit rows. The parameters deliberately shadow the
+    /// active account's properties of the same name, so the same body renders any account.
     @ViewBuilder
-    private var claudeMainContent: some View {
+    private func claudeMainContent(
+        data usageData: UsageData?,
+        errorMessage: String?,
+        errorRequiresAuthAction: Bool,
+        isRefreshing isClaudeRefreshing: Bool,
+        isActiveAccount: Bool
+    ) -> some View {
+        let activeDisplayTypes: [LimitType] = usageData.map { data in
+            UserSettings.shared.getActiveDisplayTypes(usageData: data).filter { $0.provider == .claude }
+        } ?? []
+
         if let error = errorMessage, usageData == nil || errorRequiresAuthAction {
             // 错误信息（无缓存数据或认证类错误时才全屏展示）
             VStack(spacing: 12) {
@@ -348,7 +404,8 @@ struct UsageDetailView: View {
                 }
                 .frame(height: 114)
                 .onTapGesture {
-                    if refreshState.canRefresh && !refreshState.isRefreshing {
+                    // 只刷新当前账户；其它账户的列随下一轮刷新更新
+                    if isActiveAccount && refreshState.canRefresh && !refreshState.isRefreshing {
                         onMenuAction?(.refreshClaude)
                     }
                 }
@@ -625,8 +682,24 @@ struct UsageDetailView: View {
         }
     }
 
+    /// Stale-data warning of a non-active account column; nil when not shown
+    private func otherAccountStaleWarning(_ account: Account) -> String? {
+        guard let snapshot = otherAccountsUsage.snapshot(for: account.id),
+              snapshot.usageData != nil, !snapshot.errorRequiresAuthAction else { return nil }
+        return snapshot.errorMessage
+    }
+
+    /// - Parameters:
+    ///   - account: set for Claude columns when several accounts are shown side by side;
+    ///     the column title becomes the account name
+    ///   - isActiveAccount: the active account gets a checkmark; clicking another account's name switches to it
     @ViewBuilder
-    private func headerView(provider: ProviderType, showsControls: Bool) -> some View {
+    private func headerView(
+        provider: ProviderType,
+        showsControls: Bool,
+        account: Account? = nil,
+        isActiveAccount: Bool = true
+    ) -> some View {
         let headerIconSize: CGFloat = 18
         let headerRowHeight: CGFloat = 20
         HStack {
@@ -647,13 +720,40 @@ struct UsageDetailView: View {
 
             // 标题与其后的状态标记视觉上是一组，间距收紧到 4pt，给重置预告的文字留出宽度
             HStack(spacing: 4) {
-                Text(provider == .claude ? L.Usage.title : L.Usage.codexTitle)
-                    .font(.headline)
-                    // 标题优先完整显示，挤不下时由重置预告的文字缩小让位
+                if let account, !isActiveAccount {
+                    Button(action: { UserSettings.shared.switchToAccount(account) }) {
+                        Text(account.displayName)
+                            .font(.headline)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
                     .layoutPriority(1)
 
-                if let error = staleDataWarning(for: provider) {
-                    staleDataIndicator(error, provider: provider)
+                    if let error = otherAccountStaleWarning(account) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(.orange)
+                            .accessibilityLabel(error)
+                    }
+                } else {
+                    Text(account?.displayName ?? (provider == .claude ? L.Usage.title : L.Usage.codexTitle))
+                        .font(.headline)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        // 标题优先完整显示，挤不下时由重置预告的文字缩小让位
+                        .layoutPriority(1)
+
+                    if account != nil {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(.accentColor)
+                    }
+
+                    if let error = staleDataWarning(for: provider) {
+                        staleDataIndicator(error, provider: provider)
+                    }
                 }
 
                 // 重置预告放在标题行：高度固定，出现/消失都不挤动下方图表，圆环与线性图共用同一位置
@@ -783,7 +883,7 @@ struct UsageDetailView: View {
         VStack(spacing: contentSpacing) {
             VStack(spacing: contentSpacing) {
                 headerView(provider: .claude, showsControls: true)
-                claudeMainContent
+                activeClaudeMainContent
             }
             .offset(y: isAnimationHintVisible(for: .claude) ? -18 : 0)
 
@@ -807,14 +907,37 @@ struct UsageDetailView: View {
         }
     }
 
+    /// A non-active Claude account's column
+    private func otherAccountColumn(_ account: Account, showsControls: Bool) -> some View {
+        let snapshot = otherAccountsUsage.snapshot(for: account.id)
+        return VStack(spacing: contentSpacing) {
+            headerView(provider: .claude, showsControls: showsControls, account: account, isActiveAccount: false)
+            claudeMainContent(
+                data: snapshot?.usageData,
+                errorMessage: snapshot?.errorMessage,
+                errorRequiresAuthAction: snapshot?.errorRequiresAuthAction ?? false,
+                isRefreshing: isClaudeRefreshing,
+                isActiveAccount: false
+            )
+        }
+    }
+
+    /// Side-by-side columns: active Claude account, the other Claude accounts, then Codex.
+    /// The refresh/menu controls sit on the rightmost column's header.
     private func multiProviderBody(codex: CodexUsageData?) -> some View {
-        VStack(spacing: contentSpacing) {
+        let others = otherClaudeAccounts
+        let showsAccountNames = !others.isEmpty
+        return VStack(spacing: contentSpacing) {
             HStack(alignment: .top, spacing: 0) {
                 VStack(spacing: contentSpacing) {
                     ZStack(alignment: .bottom) {
                         VStack(spacing: contentSpacing) {
-                            headerView(provider: .claude, showsControls: false)
-                            claudeMainContent
+                            headerView(
+                                provider: .claude,
+                                showsControls: !isMultiProviderActive && others.isEmpty,
+                                account: showsAccountNames ? UserSettings.shared.currentAccount : nil
+                            )
+                            activeClaudeMainContent
                         }
                         .offset(y: isAnimationHintVisible(for: .claude) ? -18 : 0)
                     }
@@ -822,25 +945,40 @@ struct UsageDetailView: View {
                         animationHintOverlay(for: .claude)
                     }
                 }
-                .frame(width: 290, alignment: .top)
+                .frame(width: Self.columnWidth, alignment: .top)
 
-                VStack(spacing: contentSpacing) {
-                    ZStack(alignment: .bottom) {
-                        VStack(spacing: contentSpacing) {
-                            headerView(provider: .codex, showsControls: true)
-                            codexOnlyMainContent(codex: codex)
+                ForEach(Array(others.enumerated()), id: \.element.id) { index, account in
+                    otherAccountColumn(
+                        account,
+                        showsControls: !isMultiProviderActive && index == others.count - 1
+                    )
+                    .frame(width: Self.columnWidth, alignment: .top)
+                }
+
+                if isMultiProviderActive {
+                    VStack(spacing: contentSpacing) {
+                        ZStack(alignment: .bottom) {
+                            VStack(spacing: contentSpacing) {
+                                headerView(provider: .codex, showsControls: true)
+                                codexOnlyMainContent(codex: codex)
+                            }
+                            .offset(y: isAnimationHintVisible(for: .codex) ? -18 : 0)
                         }
-                        .offset(y: isAnimationHintVisible(for: .codex) ? -18 : 0)
+                        .overlay(alignment: .bottom) {
+                            animationHintOverlay(for: .codex)
+                        }
                     }
-                    .overlay(alignment: .bottom) {
-                        animationHintOverlay(for: .codex)
+                    .frame(width: Self.columnWidth, alignment: .top)
+                }
+            }
+            .overlay(alignment: .leading) {
+                ZStack(alignment: .leading) {
+                    ForEach(1..<max(columnCount, 2), id: \.self) { column in
+                        ProviderDivider(height: multiProviderDividerHeight)
+                            .offset(x: Self.columnWidth * CGFloat(column))
                     }
                 }
-                .frame(width: 290, alignment: .top)
-            }
-            .overlay(alignment: .center) {
-                ProviderDivider(height: multiProviderDividerHeight)
-                    .allowsHitTesting(false)
+                .allowsHitTesting(false)
             }
 
             updateNotificationView
@@ -878,7 +1016,7 @@ struct UsageDetailView: View {
 
     var body: some View {
         Group {
-            if isMultiProviderActive {
+            if usesColumnLayout {
                 multiProviderBody(codex: codexUsageData)
             } else if isCodexOnlyActive {
                 codexOnlyBody(codex: codexUsageData)
@@ -888,6 +1026,7 @@ struct UsageDetailView: View {
         }
         .frame(width: contentWidth, height: contentHeight)
         .animation(.easeInOut(duration: 0.25), value: isMultiProviderActive)
+        .animation(.easeInOut(duration: 0.25), value: usesColumnLayout)
         .animation(.easeInOut(duration: 0.25), value: isCodexOnlyActive)
         .animation(.easeInOut(duration: 0.25), value: showAnimationTypeHint)
         .id(localization.updateTrigger)  // 语言变化时重新创建视图
@@ -1019,6 +1158,7 @@ struct UsageDetailView_Previews: PreviewProvider {
     @State static var codexNeedsRelogin = false
     @State static var codexResetAnnouncement: CodexResetAnnouncement? = nil
     @StateObject static var refreshState = RefreshState()
+    @StateObject static var otherAccountsUsage = OtherAccountsUsageStore()
     @State static var hasUpdate = false
     @State static var shouldShowBadge = false
 
@@ -1033,6 +1173,7 @@ struct UsageDetailView_Previews: PreviewProvider {
             codexNeedsRelogin: $codexNeedsRelogin,
             codexResetAnnouncement: $codexResetAnnouncement,
             refreshState: refreshState,
+            otherAccountsUsage: otherAccountsUsage,
             hasAvailableUpdate: $hasUpdate,
             shouldShowUpdateBadge: $shouldShowBadge
         )

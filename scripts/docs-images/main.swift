@@ -328,6 +328,7 @@ func detailView(withCodex: Bool) -> some View {
         codexNeedsRelogin: .constant(false),
         codexResetAnnouncement: .constant(nil),
         refreshState: RefreshState(),
+        otherAccountsUsage: OtherAccountsUsageStore(),
         hasAvailableUpdate: .constant(false),
         shouldShowUpdateBadge: .constant(false)
     )
