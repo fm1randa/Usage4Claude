@@ -236,6 +236,9 @@ class DataRefreshManager: ObservableObject {
                     self.errorRequiresAuthAction = false
                     self.recordFetchSuccess(for: .claude)
                     monitoringUtilizations[.claude] = self.claudeMonitoringUtilization(active: data)
+                    if let accountId = self.settings.currentAccount?.id {
+                        self.lookUpEmailIfMissing(for: accountId)
+                    }
 
                     NotificationManager.shared.checkAndNotify(usageData: data, previousData: previousData)
 
@@ -267,7 +270,6 @@ class DataRefreshManager: ObservableObject {
     /// Runs alongside the active account's fetch; its results never touch the active account's
     /// state (menu bar icon, notifications, smart refresh, backoff).
     private func fetchOtherClaudeAccounts() {
-        fetchMissingAccountEmails()
         let currentId = settings.currentAccount?.id
         let others = settings.accounts.filter { $0.id != currentId }
         otherAccountsUsage.retain(only: Set(others.map(\.id)))
@@ -283,6 +285,7 @@ class DataRefreshManager: ObservableObject {
                 case .success(let data):
                     let previousData = self.otherAccountsUsage.snapshot(for: account.id)?.usageData
                     self.otherAccountsUsage.recordSuccess(data, for: account.id)
+                    self.lookUpEmailIfMissing(for: account.id)
                     NotificationManager.shared.checkAndNotify(usageData: data, previousData: previousData, accountId: account.id)
                 case .failure(let error):
                     AppLog.warning(.refresh, "Refresh of a non-active Claude account failed: \(error.localizedDescription)")
@@ -296,16 +299,23 @@ class DataRefreshManager: ObservableObject {
         }
     }
 
-    /// Looks up the login email of accounts that don't have one yet, so same-organization
-    /// accounts can be told apart (displayName falls back to the email when there is no alias)
-    private func fetchMissingAccountEmails() {
-        for account in settings.accounts where account.email == nil && !emailLookupsAttempted.contains(account.id) {
-            emailLookupsAttempted.insert(account.id)
-            apiService.fetchEmail(forAccount: account.id) { [weak self] email in
-                guard let email else { return }
-                self?.settings.updateClaudeAccountEmail(email, for: account.id)
-                AppLog.event(.settings, "Stored the login email of a Claude account")
+    /// Looks up the login email of an account that doesn't have one yet, so same-organization
+    /// accounts can be told apart (displayName falls back to the email when there is no alias).
+    /// Only called right after that account's usage fetch succeeded: its OAuth access token is
+    /// then cached, so the lookup never starts a refresh of its own. A parallel refresh would
+    /// race the usage fetch's refresh_token rotation and risk an invalid_grant.
+    private func lookUpEmailIfMissing(for accountId: UUID) {
+        guard let account = settings.accounts.first(where: { $0.id == accountId }),
+              account.email == nil,
+              !emailLookupsAttempted.contains(accountId) else { return }
+        emailLookupsAttempted.insert(accountId)
+        apiService.fetchEmail(forAccount: accountId) { [weak self] email in
+            guard let email else {
+                AppLog.warning(.settings, "Could not look up the login email of a Claude account")
+                return
             }
+            self?.settings.updateClaudeAccountEmail(email, for: accountId)
+            AppLog.event(.settings, "Stored the login email of a Claude account")
         }
     }
 
@@ -658,6 +668,9 @@ class DataRefreshManager: ObservableObject {
                 NotificationManager.shared.checkAndNotify(usageData: data, previousData: previousData)
                 self.recordFetchSuccess(for: .claude)
                 self.settings.updateSmartMonitoringMode(providerUtilizations: [.claude: self.claudeMonitoringUtilization(active: data)])
+                if let accountId = self.settings.currentAccount?.id {
+                    self.lookUpEmailIfMissing(for: accountId)
+                }
                 let newResetsAt = data.resetsAt
                 if hasResetTimeChanged(from: self.lastResetsAt, to: newResetsAt) {
                     self.cancelResetVerification()
