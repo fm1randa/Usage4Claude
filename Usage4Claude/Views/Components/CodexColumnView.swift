@@ -18,6 +18,8 @@ struct CodexColumnView: View {
     var onRefresh: (() -> Void)?
     var onAnimationHint: ((String) -> Void)?
     var onToggleRemainingMode: (() -> Void)?
+    /// When these numbers were fetched, shown under the ring
+    var updatedAt: Date? = nil
 
     private var activeCodexTypes: [LimitType] {
         UserSettings.shared.getActiveDisplayTypes(usageData: nil, codexUsageData: codexUsageData)
@@ -158,6 +160,10 @@ struct CodexColumnView: View {
                 animationType = allTypes[(currentIndex + 1) % allTypes.count]
 
                 onAnimationHint?(animationType.name)
+            }
+
+            if let updatedAt {
+                LastUpdatedLabel(date: updatedAt)
             }
 
             // 限制行

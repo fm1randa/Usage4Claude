@@ -158,7 +158,7 @@ struct UsageDetailView: View {
         // 基础高度：圆环、标题、上下边距等固定内容的总高度
         // 每行实际高度：文字(12pt) + vertical padding(12pt) + 背景高度 ≈ 26pt
         // 行间距：5pt
-        let baseHeight: CGFloat = 190
+        let baseHeight: CGFloat = 190 + LastUpdatedLabel.addedHeight
         let rowHeight: CGFloat = 26
         let spacing: CGFloat = 5
 
@@ -172,7 +172,7 @@ struct UsageDetailView: View {
     /// Codex-only 模式的动态高度
     private var codexOnlyHeight: CGFloat {
         let activeCount = activeCodexDisplayTypes.count
-        let baseHeight: CGFloat = 190
+        let baseHeight: CGFloat = 190 + LastUpdatedLabel.addedHeight
         let rowHeight: CGFloat = 26
         let spacing: CGFloat = 5
         let rowCount = activeCount == 1 ? 2 : max(activeCount, codexUsageData == nil ? 0 : 1)
@@ -203,7 +203,7 @@ struct UsageDetailView: View {
         let rowHeight: CGFloat = 26
         let spacing: CGFloat = 5
         let rowsHeight = CGFloat(maxRows) * rowHeight + CGFloat(max(0, maxRows - 1)) * spacing
-        return 190 + rowsHeight
+        return 190 + LastUpdatedLabel.addedHeight + rowsHeight
     }
 
     private var contentSpacing: CGFloat {
@@ -256,7 +256,8 @@ struct UsageDetailView: View {
             data: usageData,
             errorMessage: errorMessage,
             errorRequiresAuthAction: errorRequiresAuthAction,
-            isRefreshing: isClaudeRefreshing
+            isRefreshing: isClaudeRefreshing,
+            updatedAt: refreshState.lastSuccessAt[.claude]
         )
     }
 
@@ -267,7 +268,8 @@ struct UsageDetailView: View {
         data usageData: UsageData?,
         errorMessage: String?,
         errorRequiresAuthAction: Bool,
-        isRefreshing isClaudeRefreshing: Bool
+        isRefreshing isClaudeRefreshing: Bool,
+        updatedAt: Date?
     ) -> some View {
         let activeDisplayTypes: [LimitType] = usageData.map { data in
             UserSettings.shared.getActiveDisplayTypes(usageData: data).filter { $0.provider == .claude }
@@ -419,6 +421,10 @@ struct UsageDetailView: View {
                     claudeAnimationType = allTypes[nextIndex]
 
                     showAnimationHint(claudeAnimationType.name, provider: .claude)
+                }
+
+                if let updatedAt {
+                    LastUpdatedLabel(date: updatedAt)
                 }
 
                 VStack(spacing: 8) {
@@ -716,14 +722,6 @@ struct UsageDetailView: View {
         return snapshot.errorMessage
     }
 
-    /// Last successful fetch of a column: a background account's own snapshot, otherwise the provider's main fetch
-    private func lastUpdatedAt(provider: ProviderType, account: Account?) -> Date? {
-        if provider == .claude, let account, account.id != UserSettings.shared.currentAccount?.id {
-            return otherAccountsUsage.snapshot(for: account.id)?.fetchedAt
-        }
-        return refreshState.lastSuccessAt[provider]
-    }
-
     /// - Parameter account: set for Claude columns when several accounts are shown side by side;
     ///   the column title becomes the account name
     @ViewBuilder
@@ -778,15 +776,6 @@ struct UsageDetailView: View {
             // 最小宽度为 0：与刷新按钮之间仍有 HStack 默认间距，最挤时把这 4pt 也让给文字
             Spacer(minLength: 0)
 
-            // When the numbers in this column were fetched (date and time)
-            if let updatedAt = lastUpdatedAt(provider: provider, account: account) {
-                Text(TimeFormatHelper.formatDateTime(updatedAt, dateTemplate: "MMMd"))
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-
             if showsControls {
                 refreshAndMenuButtons
             }
@@ -830,7 +819,8 @@ struct UsageDetailView: View {
                 rotationAngle: $rotationAngle,
                 onRefresh: { onMenuAction?(.refreshCodex) },
                 onAnimationHint: { showAnimationHint($0, provider: .codex) },
-                onToggleRemainingMode: toggleRemainingMode
+                onToggleRemainingMode: toggleRemainingMode,
+                updatedAt: refreshState.lastSuccessAt[.codex]
             )
         } else if let error = codexErrorMessage {
             VStack(spacing: 12) {
@@ -952,7 +942,8 @@ struct UsageDetailView: View {
                 data: snapshot?.usageData,
                 errorMessage: snapshot?.errorMessage,
                 errorRequiresAuthAction: snapshot?.errorRequiresAuthAction ?? false,
-                isRefreshing: isClaudeRefreshing
+                isRefreshing: isClaudeRefreshing,
+                updatedAt: snapshot?.fetchedAt
             )
         }
     }

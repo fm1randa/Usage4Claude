@@ -218,6 +218,22 @@ enum DetailPopoverText {
 // MARK: - Provider Divider
 
 /// 双 Provider 主窗口中央的柔和竖线，视觉与设置页标签分隔线一致
+/// When a column's numbers were fetched (date and time), shown under its ring
+struct LastUpdatedLabel: View {
+    let date: Date
+
+    /// Extra popover height the label takes: its line minus the 8pt it is pulled into the ring's gap
+    static let addedHeight: CGFloat = 20
+
+    var body: some View {
+        Text(TimeFormatHelper.formatDateTime(date, dateTemplate: "MMMd"))
+            .font(.system(size: 11))
+            .foregroundColor(.secondary)
+            .lineLimit(1)
+            .padding(.top, -8)
+    }
+}
+
 struct ProviderDivider: View {
     let height: CGFloat
 
