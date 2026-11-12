@@ -225,7 +225,8 @@ final class ClaudeOAuthCoordinator: ObservableObject {
             organizationId: stableOrgId,
             organizationName: displayName,
             alias: nil,
-            provider: .claude
+            provider: .claude,
+            email: email.isEmpty ? nil : email
         )
         UserSettings.shared.addAccount(account)
         UserSettings.shared.switchToAccount(account)

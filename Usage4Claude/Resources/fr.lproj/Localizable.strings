@@ -387,6 +387,7 @@
 "account.alias_placeholder" = "ex. Pro perso, Équipe travail";
 "account.clear_alias" = "Effacer l'alias";
 "account.organization_id" = "Identifiant d'organisation";
+"account.email" = "E-mail";
 "account.copy_org_id" = "Copier l'identifiant d'organisation";
 "account.delete_account" = "Supprimer ce compte";
 "account.delete_confirm_title" = "Supprimer le compte";

@@ -387,6 +387,7 @@
 "account.alias_placeholder" = "예: 개인 Pro, 회사 팀";
 "account.clear_alias" = "별명 삭제";
 "account.organization_id" = "Organization ID";
+"account.email" = "이메일";
 "account.copy_org_id" = "Organization ID 복사";
 "account.delete_account" = "이 계정 삭제";
 "account.delete_confirm_title" = "계정 삭제";

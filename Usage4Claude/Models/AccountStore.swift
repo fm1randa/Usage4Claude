@@ -286,6 +286,13 @@ final class AccountStore: ObservableObject {
         AppLog.event(.settings, "Renamed Claude account to: \(displayName)")
     }
 
+    /// Stores the login email looked up for a Claude account (no accountChanged notification)
+    func updateClaudeAccountEmail(_ email: String, for accountId: UUID) {
+        guard let index = accounts.firstIndex(where: { $0.id == accountId }),
+              accounts[index].email != email else { return }
+        accounts[index].email = email
+    }
+
     /// 静默更新 Claude 账户的 session-token（不触发 accountChanged 通知）
     /// 用于 OAuth refresh_token 轮换场景——只更新持久化数据，不触发重新拉取循环
     ///

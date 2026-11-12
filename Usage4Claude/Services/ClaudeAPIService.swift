@@ -701,6 +701,75 @@ class ClaudeAPIService {
         }.resume()
     }
 
+    // MARK: - Account Email
+
+    /// Looks up the login email of a Claude account: the OAuth profile for OAuth accounts,
+    /// claude.ai's account endpoint for session-key accounts. Completion runs on the main
+    /// thread with nil on any failure; the email is cosmetic, so errors are only logged.
+    func fetchEmail(forAccount accountId: UUID, completion: @escaping (String?) -> Void) {
+        let complete: (String?) -> Void = { email in
+            DispatchQueue.main.async { completion(email) }
+        }
+        guard let credentials = credentials(for: accountId) else {
+            complete(nil)
+            return
+        }
+
+        if Self.isOAuthRefreshToken(credentials.sessionKey) {
+            fetchOAuthAccessToken(accountId: accountId, refreshToken: credentials.sessionKey) { result in
+                guard case .success(let accessToken) = result else {
+                    complete(nil)
+                    return
+                }
+                ClaudeOAuthService.fetchProfile(accessToken: accessToken) { profile in
+                    if case .success(let p) = profile, !p.email.isEmpty {
+                        complete(p.email)
+                    } else {
+                        AppLog.warning(.api, "Claude OAuth profile carried no email")
+                        complete(nil)
+                    }
+                }
+            }
+            return
+        }
+
+        guard let url = URL(string: "https://claude.ai/api/account") else {
+            complete(nil)
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.assumesHTTP3Capable = false
+        ClaudeAPIHeaderBuilder.applyHeaders(to: &request, organizationId: nil, sessionKey: credentials.sessionKey)
+
+        session.dataTask(with: request) { data, response, error in
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard error == nil, (200...299).contains(status), let data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                AppLog.warning(.api, "Claude account lookup failed (HTTP \(status)); the account keeps its organization name")
+                complete(nil)
+                return
+            }
+            let email = Self.email(in: json)
+            if email == nil {
+                AppLog.warning(.api, "Claude account response carried no email; top-level keys: \(Array(json.keys).sorted())")
+            }
+            complete(email)
+        }.resume()
+    }
+
+    /// The email in a claude.ai account payload: `email_address` (or `email`), top level or under `account`
+    private static func email(in json: [String: Any]) -> String? {
+        for container in [json, json["account"] as? [String: Any] ?? [:]] {
+            for key in ["email_address", "email"] {
+                if let email = container[key] as? String, !email.isEmpty {
+                    return email
+                }
+            }
+        }
+        return nil
+    }
+
     /// 取消所有正在进行的网络请求
     /// 在应用退出或需要中断请求时调用
     func cancelAllRequests() {

@@ -40,6 +40,7 @@ enum L {
         static var aliasPlaceholder: String { localized("account.alias_placeholder") }
         static var clearAlias: String { localized("account.clear_alias") }
         static var organizationId: String { localized("account.organization_id") }
+        static var email: String { localized("account.email") }
         static var copyOrgId: String { localized("account.copy_org_id") }
         static var deleteAccount: String { localized("account.delete_account") }
         static var deleteConfirmTitle: String { localized("account.delete_confirm_title") }

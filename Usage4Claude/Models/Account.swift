@@ -16,10 +16,15 @@ struct Account: Codable, Identifiable, Equatable {
     var alias: String?
     let createdAt: Date
     var provider: ProviderType
+    /// Login email, looked up after sign-in; tells apart several accounts of the same organization
+    var email: String?
 
     var displayName: String {
         if let alias = alias, !alias.isEmpty {
             return alias
+        }
+        if let email = email, !email.isEmpty {
+            return email
         }
         return organizationName
     }
@@ -27,7 +32,7 @@ struct Account: Codable, Identifiable, Equatable {
     // MARK: - CodingKeys
 
     private enum CodingKeys: String, CodingKey {
-        case id, sessionKey, organizationId, organizationName, alias, createdAt, provider
+        case id, sessionKey, organizationId, organizationName, alias, createdAt, provider, email
     }
 
     // MARK: - Codable
@@ -42,6 +47,7 @@ struct Account: Codable, Identifiable, Equatable {
         alias = try container.decodeIfPresent(String.self, forKey: .alias)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         provider = try container.decodeIfPresent(ProviderType.self, forKey: .provider) ?? .claude
+        email = try container.decodeIfPresent(String.self, forKey: .email)
     }
 
     // MARK: - Initialization
@@ -51,7 +57,8 @@ struct Account: Codable, Identifiable, Equatable {
         organizationId: String,
         organizationName: String,
         alias: String? = nil,
-        provider: ProviderType = .claude
+        provider: ProviderType = .claude,
+        email: String? = nil
     ) {
         self.id = UUID()
         self.sessionKey = sessionKey
@@ -60,6 +67,7 @@ struct Account: Codable, Identifiable, Equatable {
         self.alias = alias
         self.createdAt = Date()
         self.provider = provider
+        self.email = email
     }
 
     init(
@@ -69,7 +77,8 @@ struct Account: Codable, Identifiable, Equatable {
         organizationName: String,
         alias: String?,
         createdAt: Date,
-        provider: ProviderType = .claude
+        provider: ProviderType = .claude,
+        email: String? = nil
     ) {
         self.id = id
         self.sessionKey = sessionKey
@@ -78,6 +87,7 @@ struct Account: Codable, Identifiable, Equatable {
         self.alias = alias
         self.createdAt = createdAt
         self.provider = provider
+        self.email = email
     }
 
     // MARK: - Equatable

@@ -1311,6 +1311,10 @@ class UserSettings: ObservableObject {
         accountStore.silentlyUpdateClaudeSessionToken(newToken, replacing: oldToken)
     }
 
+    func updateClaudeAccountEmail(_ email: String, for accountId: UUID) {
+        accountStore.updateClaudeAccountEmail(email, for: accountId)
+    }
+
     private func ensureDefaultCodexDisplayTypesForCustomMode() {
         guard displayMode == .custom else { return }
         let codexTypes: Set<LimitType> = [.codexPrimary, .codexSecondary, .codexExtraUsage]

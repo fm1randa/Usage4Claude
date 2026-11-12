@@ -386,6 +386,7 @@
 "account.alias_placeholder" = "z. B. Privat Pro, Arbeits-Team";
 "account.clear_alias" = "Alias löschen";
 "account.organization_id" = "Organisations-ID";
+"account.email" = "E-Mail";
 "account.copy_org_id" = "Organisations-ID kopieren";
 "account.delete_account" = "Diesen Account löschen";
 "account.delete_confirm_title" = "Account löschen";

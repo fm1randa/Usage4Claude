@@ -55,6 +55,8 @@ class DataRefreshManager: ObservableObject {
     /// Non-active accounts with a request in flight: overlapping refresh paths
     /// (e.g. a ring tap during a timer fetch) must not request the same account twice
     private var otherAccountsInFlight: Set<UUID> = []
+    /// Accounts whose email was already looked up this launch (one attempt each, success or not)
+    private var emailLookupsAttempted: Set<UUID> = []
 
     // MARK: - Private State
 
@@ -265,6 +267,7 @@ class DataRefreshManager: ObservableObject {
     /// Runs alongside the active account's fetch; its results never touch the active account's
     /// state (menu bar icon, notifications, smart refresh, backoff).
     private func fetchOtherClaudeAccounts() {
+        fetchMissingAccountEmails()
         let currentId = settings.currentAccount?.id
         let others = settings.accounts.filter { $0.id != currentId }
         otherAccountsUsage.retain(only: Set(others.map(\.id)))
@@ -289,6 +292,19 @@ class DataRefreshManager: ObservableObject {
                         for: account.id
                     )
                 }
+            }
+        }
+    }
+
+    /// Looks up the login email of accounts that don't have one yet, so same-organization
+    /// accounts can be told apart (displayName falls back to the email when there is no alias)
+    private func fetchMissingAccountEmails() {
+        for account in settings.accounts where account.email == nil && !emailLookupsAttempted.contains(account.id) {
+            emailLookupsAttempted.insert(account.id)
+            apiService.fetchEmail(forAccount: account.id) { [weak self] email in
+                guard let email else { return }
+                self?.settings.updateClaudeAccountEmail(email, for: account.id)
+                AppLog.event(.settings, "Stored the login email of a Claude account")
             }
         }
     }
