@@ -315,10 +315,12 @@ struct UnifiedLimitRow: View {
 
     private var iconColor: Color {
         switch type {
+        // Same usage-based scale as the popover rings (and the menu bar icon), so a 5-hour
+        // limit at 84% reads orange in both places instead of an orange ring over a green row
         case .fiveHour:
-            return .green
+            return percentageValue.map { UsageColorScheme.fiveHourColorSwiftUI($0) } ?? .green
         case .sevenDay:
-            return .purple
+            return percentageValue.map { UsageColorScheme.sevenDayColorSwiftUI($0) } ?? .purple
         case .opusWeekly:
             return .orange
         case .sonnetWeekly:
