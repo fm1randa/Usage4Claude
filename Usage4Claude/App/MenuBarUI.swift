@@ -107,6 +107,10 @@ class MenuBarUI: NSObject {
     /// 抖动 6 次，切换壁纸时也会经过一个 DarkAqua 中间态），逐次重绘会看到图标闪烁
     private var appearanceDebounce: DispatchWorkItem?
     private var isObservingAppearance = false
+    /// Last appearance a redraw was posted for. Redrawing the icon makes the status item
+    /// re-emit effectiveAppearance KVO with the same value; reacting to that redrew the
+    /// icon again every debounce interval, forever (~5 redraws/s)
+    private var lastSettledAppearanceName: NSAppearance.Name?
 
     /// 监听菜单栏的实际明暗
     ///
@@ -135,8 +139,12 @@ class MenuBarUI: NSObject {
         }
         appearanceDebounce?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            let name = self?.statusItem.button?.effectiveAppearance.name.rawValue ?? "unknown"
-            AppLog.trace(.menuBar, "Menu bar appearance settled: \(name)")
+            guard let self else { return }
+            let name = self.statusItem.button?.effectiveAppearance.name
+            // Same appearance as last time: a KVO echo of our own redraw, nothing to repaint
+            guard name != self.lastSettledAppearanceName else { return }
+            self.lastSettledAppearanceName = name
+            AppLog.trace(.menuBar, "Menu bar appearance settled: \(name?.rawValue ?? "unknown")")
             NotificationCenter.default.post(name: .menuBarAppearanceChanged, object: nil)
         }
         appearanceDebounce = work
